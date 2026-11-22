@@ -1,0 +1,14 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+.aistudio/
+.playwright-cli/
+.wrangler/
+data/
+public/assets/aistudio/
+metadata.json
