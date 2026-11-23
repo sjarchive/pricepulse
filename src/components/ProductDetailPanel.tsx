@@ -81,13 +81,15 @@ export function ProductDetailPanel({
         : dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
       return {
         label,
-        fullTime: dt.toLocaleString('en-GB', {
+        fullTime: `${dt.toLocaleDateString('en-GB', {
           day: '2-digit',
           month: '2-digit',
           year: 'numeric',
+        })}, ${dt.toLocaleTimeString('en-US', {
           hour: 'numeric',
           minute: '2-digit',
-        }),
+          hour12: true,
+        })}`,
         price: point.price,
       };
     });
