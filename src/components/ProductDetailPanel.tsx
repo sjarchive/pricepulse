@@ -81,7 +81,13 @@ export function ProductDetailPanel({
         : dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
       return {
         label,
-        fullTime: dt.toLocaleString(),
+        fullTime: dt.toLocaleString('en-GB', {
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric',
+          hour: 'numeric',
+          minute: '2-digit',
+        }),
         price: point.price,
       };
     });
