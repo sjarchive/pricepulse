@@ -3,7 +3,6 @@ import { ArrowRight, Link2, Loader2, X } from 'lucide-react';
 import { createTrackedProduct, previewProductLink } from '../api/client';
 import {
   MIN_CHECK_INTERVAL_HOURS,
-  SUPPORTED_PLATFORMS,
   detectPlatform,
   formatCurrency,
   validateCheckInterval,
@@ -142,9 +141,6 @@ export function TrackProductBar({
             Paste a link from Amazon, Flipkart, Myntra, Ajio, Croma, Nykaa, Walmart, Best Buy, or any online store.
           </p>
         </div>
-        <p className="text-xs text-slate-500 md:whitespace-nowrap">
-          Supported: {SUPPORTED_PLATFORMS.slice(0, 6).map((p) => p.label).join(' · ')} &amp; more
-        </p>
       </div>
 
       <form onSubmit={handleInspectUrl} className="flex flex-col sm:flex-row gap-3">
