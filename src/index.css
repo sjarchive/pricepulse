@@ -19,6 +19,34 @@
     font-family: var(--font-display);
     letter-spacing: -0.02em;
   }
+
+  /* Show pointer (finger) cursor on all interactive/clickable elements.
+     Tailwind v4 preflight dropped `cursor: pointer` from buttons, so restore it globally. */
+  a,
+  button,
+  [role="button"],
+  [role="tab"],
+  [role="menuitem"],
+  [role="option"],
+  [role="checkbox"],
+  [role="switch"],
+  [role="link"],
+  select,
+  summary,
+  label,
+  input[type="button"],
+  input[type="submit"],
+  input[type="checkbox"],
+  input[type="radio"],
+  [onclick] {
+    cursor: pointer;
+  }
+
+  a:disabled,
+  button:disabled,
+  [role="button"][aria-disabled="true"] {
+    cursor: not-allowed;
+  }
 }
 
 .tabular-nums {
