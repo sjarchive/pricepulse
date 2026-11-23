@@ -12,9 +12,10 @@ interface ScheduleViewProps {
   settings: AlertSettings;
   products: TrackedProduct[];
   runningCycle: boolean;
+  nowMs: number;
   onSaveDefaultInterval: (hours: number, applyToAll: boolean) => Promise<void>;
   onUpdateProductInterval: (id: string, hours: number) => Promise<void>;
-  onRunCycleNow: () => Promise<void>;
+  onRunCycleNow: () => Promise<{ checkedCount: number; alertsCount: number }>;
 }
 
 const PRESET_HOURS = [1, 2, 4, 6, 12, 24];
@@ -23,6 +24,7 @@ export function ScheduleView({
   settings,
   products,
   runningCycle,
+  nowMs,
   onSaveDefaultInterval,
   onUpdateProductInterval,
   onRunCycleNow,
@@ -30,6 +32,7 @@ export function ScheduleView({
   const [hoursInput, setHoursInput] = useState(String(settings.defaultCheckIntervalHours));
   const [applyToAll, setApplyToAll] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [updatingProductId, setUpdatingProductId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
   useEffect(() => {
@@ -64,6 +67,44 @@ export function ScheduleView({
     }
   }
 
+  async function handleRunCycle() {
+    setFeedback(null);
+    try {
+      const { checkedCount, alertsCount } = await onRunCycleNow();
+      setFeedback({
+        type: 'ok',
+        text:
+          alertsCount > 0
+            ? `Checked ${checkedCount} ${checkedCount === 1 ? 'product' : 'products'} and triggered ${alertsCount} price drop ${alertsCount === 1 ? 'alert' : 'alerts'}.`
+            : `Checked ${checkedCount} ${checkedCount === 1 ? 'product' : 'products'}. No new price drops triggered alerts.`,
+      });
+    } catch (err) {
+      setFeedback({
+        type: 'err',
+        text: err instanceof Error ? err.message : 'Failed to run scheduled check cycle.',
+      });
+    }
+  }
+
+  async function handleProductIntervalChange(product: TrackedProduct, hours: number) {
+    setFeedback(null);
+    setUpdatingProductId(product.id);
+    try {
+      await onUpdateProductInterval(product.id, hours);
+      setFeedback({
+        type: 'ok',
+        text: `Updated "${product.title}" to check every ${hours} ${hours === 1 ? 'hour' : 'hours'}.`,
+      });
+    } catch (err) {
+      setFeedback({
+        type: 'err',
+        text: err instanceof Error ? err.message : 'Failed to update product check interval.',
+      });
+    } finally {
+      setUpdatingProductId(null);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
@@ -78,7 +119,7 @@ export function ScheduleView({
 
         <button
           type="button"
-          onClick={onRunCycleNow}
+          onClick={handleRunCycle}
           disabled={runningCycle || products.length === 0}
           className="h-9 px-4 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white text-xs font-medium rounded-lg inline-flex items-center justify-center gap-2 transition-colors whitespace-nowrap w-full sm:w-auto cursor-pointer"
         >
@@ -227,8 +268,9 @@ export function ScheduleView({
                       id={`mobile-interval-${product.id}`}
                       aria-label={`Check interval for ${product.title}`}
                       value={product.checkIntervalHours}
-                      onChange={(e) => onUpdateProductInterval(product.id, Number(e.target.value))}
-                      className="w-full h-9 px-3 text-xs font-mono tabular-nums text-slate-900 bg-white border border-slate-300 rounded-lg focus:outline-none focus:border-blue-600"
+                      disabled={updatingProductId === product.id}
+                      onChange={(e) => handleProductIntervalChange(product, Number(e.target.value))}
+                      className="w-full h-9 px-3 text-xs font-mono tabular-nums text-slate-900 bg-white border border-slate-300 rounded-lg focus:outline-none focus:border-blue-600 disabled:opacity-60"
                     >
                       {PRESET_HOURS.map((hrs) => (
                         <option key={hrs} value={hrs}>
@@ -247,13 +289,13 @@ export function ScheduleView({
                     <div>
                       <p className="text-slate-500">Last Checked</p>
                       <p className="font-mono tabular-nums text-slate-700 mt-0.5">
-                        {formatRelativeTime(product.lastCheckedAt)}
+                        {formatRelativeTime(product.lastCheckedAt, nowMs)}
                       </p>
                     </div>
                     <div className="text-right">
                       <p className="text-slate-500">Next Check</p>
                       <p className="font-mono tabular-nums font-medium text-slate-900 mt-0.5">
-                        {formatCountdown(product.nextCheckAt)}
+                        {formatCountdown(product.nextCheckAt, nowMs)}
                       </p>
                     </div>
                   </div>
@@ -286,8 +328,9 @@ export function ScheduleView({
                         <select
                           aria-label={`Check interval for ${product.title}`}
                           value={product.checkIntervalHours}
-                          onChange={(e) => onUpdateProductInterval(product.id, Number(e.target.value))}
-                          className="h-8 px-2.5 text-xs font-mono tabular-nums text-slate-900 bg-white border border-slate-300 rounded-md focus:outline-none focus:border-blue-600"
+                          disabled={updatingProductId === product.id}
+                          onChange={(e) => handleProductIntervalChange(product, Number(e.target.value))}
+                          className="h-8 px-2.5 text-xs font-mono tabular-nums text-slate-900 bg-white border border-slate-300 rounded-md focus:outline-none focus:border-blue-600 disabled:opacity-60"
                         >
                           {PRESET_HOURS.map((hrs) => (
                             <option key={hrs} value={hrs}>
@@ -302,10 +345,10 @@ export function ScheduleView({
                         </select>
                       </td>
                       <td className="py-3 px-4 text-right font-mono text-xs tabular-nums text-slate-500 whitespace-nowrap">
-                        {formatRelativeTime(product.lastCheckedAt)}
+                        {formatRelativeTime(product.lastCheckedAt, nowMs)}
                       </td>
                       <td className="py-3 pl-4 pr-5 text-right font-mono text-xs tabular-nums text-slate-900 whitespace-nowrap">
-                        {formatCountdown(product.nextCheckAt)}
+                        {formatCountdown(product.nextCheckAt, nowMs)}
                       </td>
                     </tr>
                   ))}

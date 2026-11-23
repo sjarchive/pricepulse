@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Menu } from 'lucide-react';
+import { Menu, X } from 'lucide-react';
 import {
   checkProductPriceNow,
   clearAllAlertLogs,
@@ -76,8 +76,25 @@ export default function App() {
   const [checkingId, setCheckingId] = useState<string | null>(null);
   const [runningCycle, setRunningCycle] = useState(false);
   const [liveToastAlert, setLiveToastAlert] = useState<AlertLogEntry | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const trackInputRef = useRef<HTMLInputElement | null>(null);
+  const notifiedAlertIdsRef = useRef<Set<string>>(new Set());
+
+  const notifyAlert = useCallback((alert: AlertLogEntry, showOsPush: boolean = true) => {
+    if (notifiedAlertIdsRef.current.has(alert.id)) return;
+    notifiedAlertIdsRef.current.add(alert.id);
+    setLiveToastAlert(alert);
+    if (showOsPush) {
+      const pushEnabled = alert.deliveries.some(
+        (d) => d.channel === 'push' && d.status !== 'disabled'
+      );
+      if (pushEnabled) {
+        showBrowserPushNotification(alert.productTitle, alert.message, alert.productUrl);
+      }
+    }
+  }, []);
 
   const clearProtectedState = useCallback(() => {
     setAuthUsername(null);
@@ -87,6 +104,8 @@ export default function App() {
     setSelectedProductId(null);
     setLiveToastAlert(null);
     setLoadError(null);
+    setActionError(null);
+    notifiedAlertIdsRef.current.clear();
     setActiveSection('watchlist');
   }, []);
 
@@ -142,6 +161,14 @@ export default function App() {
     }
   }, [authUsername, loadData]);
 
+  useEffect(() => {
+    if (!authUsername) return;
+    const timer = setInterval(() => {
+      setNowMs(Date.now());
+    }, 30_000);
+    return () => clearInterval(timer);
+  }, [authUsername]);
+
   // Authenticated real-time SSE alert stream (Node) with polling fallback (Cloudflare Workers)
   useEffect(() => {
     if (!authUsername) return;
@@ -157,13 +184,18 @@ export default function App() {
         try {
           const fresh = await fetchBootstrap();
           setProducts(fresh.products);
+          setSettings(fresh.settings);
+          setCapabilities(fresh.capabilities);
           setAlerts((prev) => {
-            const existing = new Set([...prev.map((a) => a.id), ...seenIds]);
+            const existing = new Set([
+              ...prev.map((a) => a.id),
+              ...seenIds,
+              ...notifiedAlertIdsRef.current,
+            ]);
             const newest = fresh.alerts.find((a) => !existing.has(a.id));
             if (newest) {
               seenIds.add(newest.id);
-              setLiveToastAlert(newest);
-              showBrowserPushNotification(newest.productTitle, newest.message, newest.productUrl);
+              notifyAlert(newest, true);
             }
             return fresh.alerts;
           });
@@ -210,12 +242,7 @@ export default function App() {
                 setAlerts((prev) =>
                   prev.some((a) => a.id === payload.alert.id) ? prev : [payload.alert, ...prev]
                 );
-                setLiveToastAlert(payload.alert);
-                showBrowserPushNotification(
-                  payload.alert.productTitle,
-                  payload.alert.message,
-                  payload.alert.productUrl
-                );
+                notifyAlert(payload.alert, true);
               }
             } catch {
               // Ignore malformed keepalive frames
@@ -236,7 +263,7 @@ export default function App() {
       controller.abort();
       if (pollTimer) clearInterval(pollTimer);
     };
-  }, [authUsername]);
+  }, [authUsername, notifyAlert]);
 
   function handleAuthenticated(token: string, username: string) {
     setAuthToken(token);
@@ -264,15 +291,26 @@ export default function App() {
     setSelectedProductId(product.id);
   }
 
-  async function handleCheckNow(product: TrackedProduct) {
+  async function handleCheckNow(
+    product: TrackedProduct
+  ): Promise<{ product: TrackedProduct; alert: AlertLogEntry | null }> {
+    setActionError(null);
     setCheckingId(product.id);
     try {
-      const { product: updated, alert } = await checkProductPriceNow(product.id);
-      setProducts((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
-      if (alert) {
-        setAlerts((prev) => (prev.some((a) => a.id === alert.id) ? prev : [alert, ...prev]));
-        setLiveToastAlert(alert);
+      const result = await checkProductPriceNow(product.id);
+      setProducts((prev) => prev.map((p) => (p.id === result.product.id ? result.product : p)));
+      setNowMs(Date.now());
+      if (result.alert) {
+        setAlerts((prev) =>
+          prev.some((a) => a.id === result.alert!.id) ? prev : [result.alert!, ...prev]
+        );
+        notifyAlert(result.alert, true);
       }
+      return result;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to check product price.';
+      setActionError(msg);
+      throw err;
     } finally {
       setCheckingId(null);
     }
@@ -282,38 +320,56 @@ export default function App() {
     id: string,
     patch: Partial<{ targetPrice: number | null; checkIntervalHours: number }>
   ) {
+    setActionError(null);
     const { product: updated } = await updateTrackedProduct(id, patch);
     setProducts((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+    setNowMs(Date.now());
   }
 
-  async function handleRecordPrice(id: string, price: number) {
+  async function handleRecordPrice(id: string, price: number): Promise<AlertLogEntry | null> {
+    setActionError(null);
     const { product: updated, alert } = await recordManualProductPrice(id, price);
     setProducts((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+    setNowMs(Date.now());
     if (alert) {
       setAlerts((prev) => (prev.some((a) => a.id === alert.id) ? prev : [alert, ...prev]));
-      setLiveToastAlert(alert);
+      notifyAlert(alert, true);
     }
+    return alert;
   }
 
   async function handleDeleteProduct(product: TrackedProduct) {
-    await deleteTrackedProduct(product.id);
-    setProducts((prev) => prev.filter((p) => p.id !== product.id));
-    if (selectedProductId === product.id) {
-      setSelectedProductId(null);
+    setActionError(null);
+    try {
+      await deleteTrackedProduct(product.id);
+      setProducts((prev) => prev.filter((p) => p.id !== product.id));
+      if (selectedProductId === product.id) {
+        setSelectedProductId(null);
+      }
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to remove product.');
     }
   }
 
   async function handleSaveSettings(nextSettings: AlertSettings, applyToAll: boolean = false) {
+    setActionError(null);
     const res = await saveAlertSettings(nextSettings, applyToAll);
     setSettings(res.settings);
     setProducts(res.products);
     setCapabilities(res.capabilities);
+    setNowMs(Date.now());
   }
 
-  async function handleSendTest(channel?: 'email' | 'telegram' | 'push') {
+  async function handleSendTest(channel?: 'email' | 'telegram' | 'push'): Promise<AlertLogEntry> {
     const { alert } = await sendTestNotification(channel);
     setAlerts((prev) => (prev.some((a) => a.id === alert.id) ? prev : [alert, ...prev]));
-    setLiveToastAlert(alert);
+    const hasDelivered = alert.deliveries.some(
+      (d) => d.status === 'sent' || d.status === 'logged'
+    );
+    if (hasDelivered) {
+      notifyAlert(alert, false);
+    }
+    return alert;
   }
 
   async function handleDeleteAlert(alert: AlertLogEntry) {
@@ -330,19 +386,22 @@ export default function App() {
     setLiveToastAlert(null);
   }
 
-  async function handleRunScheduleCycle() {
+  async function handleRunScheduleCycle(): Promise<{ checkedCount: number; alertsCount: number }> {
+    setActionError(null);
     setRunningCycle(true);
     try {
       const res = await runScheduleCheckNow();
       setProducts(res.products);
+      setNowMs(Date.now());
       if (res.alerts.length > 0) {
         setAlerts((prev) => {
           const existingIds = new Set(prev.map((a) => a.id));
           const fresh = res.alerts.filter((a) => !existingIds.has(a.id));
           return [...fresh, ...prev];
         });
-        setLiveToastAlert(res.alerts[0]);
+        notifyAlert(res.alerts[0], true);
       }
+      return { checkedCount: res.checkedCount, alertsCount: res.alerts.length };
     } finally {
       setRunningCycle(false);
     }
@@ -438,6 +497,23 @@ export default function App() {
             </div>
           ) : (
             <>
+              {actionError && (
+                <div
+                  role="alert"
+                  className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm flex items-center justify-between gap-3"
+                >
+                  <span>{actionError}</span>
+                  <button
+                    type="button"
+                    onClick={() => setActionError(null)}
+                    aria-label="Dismiss error message"
+                    className="p-1 text-red-500 hover:text-red-800 rounded cursor-pointer shrink-0"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
+
               {activeSection === 'watchlist' && (
                 <>
                   <TrackProductBar
@@ -450,6 +526,7 @@ export default function App() {
                     <ProductDetailPanel
                       product={selectedProduct}
                       checking={checkingId === selectedProduct.id}
+                      nowMs={nowMs}
                       onClose={() => setSelectedProductId(null)}
                       onCheckNow={handleCheckNow}
                       onUpdateProduct={handleUpdateProduct}
@@ -461,10 +538,13 @@ export default function App() {
                     products={products}
                     selectedProductId={selectedProductId}
                     checkingId={checkingId}
+                    nowMs={nowMs}
                     onSelectProduct={(p) =>
                       setSelectedProductId((curr) => (curr === p.id ? null : p.id))
                     }
-                    onCheckNow={handleCheckNow}
+                    onCheckNow={(p) => {
+                      handleCheckNow(p).catch(() => undefined);
+                    }}
                     onDeleteProduct={handleDeleteProduct}
                     onFocusTrackInput={focusTrackProductBar}
                   />
@@ -474,6 +554,7 @@ export default function App() {
               {activeSection === 'alerts' && (
                 <AlertsHistoryView
                   alerts={alerts}
+                  nowMs={nowMs}
                   onGoToSetup={() => setActiveSection('setup')}
                   onDeleteAlert={handleDeleteAlert}
                   onClearAlerts={handleClearAlerts}
@@ -494,6 +575,7 @@ export default function App() {
                   settings={settings}
                   products={products}
                   runningCycle={runningCycle}
+                  nowMs={nowMs}
                   onSaveDefaultInterval={(hours, applyToAll) =>
                     handleSaveSettings(
                       { ...settings, defaultCheckIntervalHours: hours },

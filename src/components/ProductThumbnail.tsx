@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Package } from 'lucide-react';
 import { sanitizeExternalUrl } from '../lib/priceUtils';
 
@@ -17,6 +17,10 @@ export function ProductThumbnail({
 }: ProductThumbnailProps) {
   const [failed, setFailed] = useState(false);
   const safeSrc = sanitizeExternalUrl(src);
+
+  useEffect(() => {
+    setFailed(false);
+  }, [safeSrc]);
 
   const dims =
     size === 'sm'

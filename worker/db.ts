@@ -109,9 +109,14 @@ function mapProductRow(row: ProductRow, history: PricePoint[]): TrackedProduct {
   };
 }
 
+const MAX_HISTORY_PER_PRODUCT = 90;
+let schemaInitPromise: Promise<void> | null = null;
+
 export async function ensureD1Schema(db: D1Database): Promise<void> {
-  await db.batch([
-    db.prepare(`CREATE TABLE IF NOT EXISTS products (
+  if (!schemaInitPromise) {
+    schemaInitPromise = db
+      .batch([
+        db.prepare(`CREATE TABLE IF NOT EXISTS products (
       id TEXT PRIMARY KEY,
       url TEXT NOT NULL,
       title TEXT NOT NULL,
@@ -132,7 +137,7 @@ export async function ensureD1Schema(db: D1Database): Promise<void> {
       in_stock INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL
     )`),
-    db.prepare(`CREATE TABLE IF NOT EXISTS price_history (
+        db.prepare(`CREATE TABLE IF NOT EXISTS price_history (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       product_id TEXT NOT NULL,
       timestamp TEXT NOT NULL,
@@ -140,7 +145,7 @@ export async function ensureD1Schema(db: D1Database): Promise<void> {
       source TEXT NOT NULL DEFAULT 'live',
       FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
     )`),
-    db.prepare(`CREATE TABLE IF NOT EXISTS settings (
+        db.prepare(`CREATE TABLE IF NOT EXISTS settings (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       default_check_interval_hours INTEGER NOT NULL DEFAULT 1,
       trigger_mode TEXT NOT NULL DEFAULT 'any_drop',
@@ -151,11 +156,11 @@ export async function ensureD1Schema(db: D1Database): Promise<void> {
       telegram_chat_id TEXT NOT NULL DEFAULT '',
       push_enabled INTEGER NOT NULL DEFAULT 1
     )`),
-    db.prepare(
-      `INSERT OR IGNORE INTO settings (id, default_check_interval_hours, trigger_mode, min_drop_percent, email_enabled, email_address, telegram_enabled, telegram_chat_id, push_enabled)
+        db.prepare(
+          `INSERT OR IGNORE INTO settings (id, default_check_interval_hours, trigger_mode, min_drop_percent, email_enabled, email_address, telegram_enabled, telegram_chat_id, push_enabled)
        VALUES (1, 1, 'any_drop', 5, 0, '', 0, '', 1)`
-    ),
-    db.prepare(`CREATE TABLE IF NOT EXISTS alerts (
+        ),
+        db.prepare(`CREATE TABLE IF NOT EXISTS alerts (
       id TEXT PRIMARY KEY,
       type TEXT NOT NULL,
       product_id TEXT,
@@ -171,19 +176,40 @@ export async function ensureD1Schema(db: D1Database): Promise<void> {
       message TEXT NOT NULL,
       deliveries_json TEXT NOT NULL
     )`),
-    db.prepare(`CREATE TABLE IF NOT EXISTS auth_credentials (
+        db.prepare(`CREATE TABLE IF NOT EXISTS auth_credentials (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       username TEXT NOT NULL,
       password_hash TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )`),
-  ]);
+        db.prepare(`CREATE TABLE IF NOT EXISTS revoked_tokens (
+      jti TEXT PRIMARY KEY,
+      expires_at INTEGER NOT NULL
+    )`),
+      ])
+      .then(() => undefined)
+      .catch((err) => {
+        schemaInitPromise = null;
+        throw err;
+      });
+  }
+  return schemaInitPromise;
 }
 
 export async function getAllProductsD1(db: D1Database): Promise<TrackedProduct[]> {
   const [prodRes, histRes] = await Promise.all([
     db.prepare('SELECT * FROM products ORDER BY created_at DESC').all<ProductRow>(),
-    db.prepare('SELECT product_id, timestamp, price, source FROM price_history ORDER BY timestamp ASC').all<HistoryRow>(),
+    db
+      .prepare(
+        `SELECT product_id, timestamp, price, source FROM (
+           SELECT product_id, timestamp, price, source,
+                  ROW_NUMBER() OVER (PARTITION BY product_id ORDER BY timestamp DESC, id DESC) AS rn
+           FROM price_history
+         ) WHERE rn <= ?
+         ORDER BY timestamp ASC`
+      )
+      .bind(MAX_HISTORY_PER_PRODUCT)
+      .all<HistoryRow>(),
   ]);
 
   const byProduct = new Map<string, PricePoint[]>();
@@ -205,8 +231,16 @@ export async function getProductByIdD1(db: D1Database, id: string): Promise<Trac
   if (!row) return null;
 
   const histRes = await db
-    .prepare('SELECT product_id, timestamp, price, source FROM price_history WHERE product_id = ? ORDER BY timestamp ASC')
-    .bind(id)
+    .prepare(
+      `SELECT product_id, timestamp, price, source FROM (
+         SELECT id, product_id, timestamp, price, source
+         FROM price_history
+         WHERE product_id = ?
+         ORDER BY timestamp DESC, id DESC
+         LIMIT ?
+       ) ORDER BY timestamp ASC`
+    )
+    .bind(id, MAX_HISTORY_PER_PRODUCT)
     .all<HistoryRow>();
 
   const history: PricePoint[] = histRes.results.map((h) => ({
@@ -336,6 +370,18 @@ export async function updateProductPriceD1(
     db
       .prepare('INSERT INTO price_history (product_id, timestamp, price, source) VALUES (?, ?, ?, ?)')
       .bind(product.id, fields.nowIso, fields.newPrice, fields.source),
+    db
+      .prepare(
+        `DELETE FROM price_history
+         WHERE product_id = ?
+           AND id NOT IN (
+             SELECT id FROM price_history
+             WHERE product_id = ?
+             ORDER BY timestamp DESC, id DESC
+             LIMIT ?
+           )`
+      )
+      .bind(product.id, product.id, MAX_HISTORY_PER_PRODUCT),
   ]);
 
   return getProductByIdD1(db, product.id);
@@ -522,4 +568,34 @@ export async function saveAuthCredentialsD1(
     .bind(record.username, record.passwordHash, record.updatedAt)
     .run();
   return record;
+}
+
+export async function isTokenRevokedD1(
+  db: D1Database,
+  jti: string,
+  nowSec: number
+): Promise<boolean> {
+  const row = await db
+    .prepare('SELECT expires_at FROM revoked_tokens WHERE jti = ?')
+    .bind(jti)
+    .first<{ expires_at: number }>();
+  if (!row) return false;
+  return row.expires_at > nowSec;
+}
+
+export async function revokeTokenD1(
+  db: D1Database,
+  jti: string,
+  expiresAtSec: number,
+  nowSec: number
+): Promise<void> {
+  await db.batch([
+    db.prepare('DELETE FROM revoked_tokens WHERE expires_at <= ?').bind(nowSec),
+    db
+      .prepare(
+        `INSERT INTO revoked_tokens (jti, expires_at) VALUES (?, ?)
+         ON CONFLICT(jti) DO UPDATE SET expires_at = excluded.expires_at`
+      )
+      .bind(jti, expiresAtSec),
+  ]);
 }

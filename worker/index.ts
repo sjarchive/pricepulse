@@ -42,6 +42,8 @@ import {
   getSettingsD1,
   insertAlertD1,
   insertProductD1,
+  isTokenRevokedD1,
+  revokeTokenD1,
   saveAuthCredentialsD1,
   saveSettingsD1,
   updateProductCheckStatusD1,
@@ -56,7 +58,25 @@ let ephemeralEdgeSessionSecret: string | null = null;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const MAX_LOGIN_FAILURES = 5;
 const edgeFailedLogins = new Map<string, number[]>();
-const edgeRevokedTokens = new Map<string, number>();
+const EDGE_CHECK_CONCURRENCY = 4;
+
+async function runEdgeWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = [];
+  for (let i = 0; i < items.length; i += concurrency) {
+    const batch = items.slice(i, i + concurrency);
+    const settled = await Promise.allSettled(batch.map((item) => worker(item)));
+    for (const outcome of settled) {
+      if (outcome.status === 'fulfilled') {
+        results.push(outcome.value);
+      }
+    }
+  }
+  return results;
+}
 
 function getEdgeSessionSecret(env: WorkerEnv): string {
   const configured = env.AUTH_SESSION_SECRET?.trim();
@@ -73,12 +93,6 @@ function getEdgeEnvAuth(env: WorkerEnv) {
     password: env.AUTH_PASSWORD,
     passwordHash: env.AUTH_PASSWORD_HASH,
   };
-}
-
-function pruneEdgeRevoked(nowSec: number): void {
-  for (const [jti, exp] of edgeRevokedTokens.entries()) {
-    if (exp <= nowSec) edgeRevokedTokens.delete(jti);
-  }
 }
 
 function checkEdgeRateLimit(ipKey: string): { allowed: boolean; retryAfterSec: number } {
@@ -126,8 +140,8 @@ async function authenticateEdgeRequest(
   const claims = await verifySessionToken(token, getEdgeSessionSecret(env));
   if (!claims) return null;
   const nowSec = Math.floor(Date.now() / 1000);
-  pruneEdgeRevoked(nowSec);
-  if (edgeRevokedTokens.has(claims.jti)) return null;
+  const revoked = await isTokenRevokedD1(env.DB, claims.jti, nowSec);
+  if (revoked) return null;
   const dbAuth = await getAuthCredentialsD1(env.DB);
   const configuredUser = resolveConfiguredUsername(getEdgeEnvAuth(env), dbAuth);
   if (!configuredUser || claims.sub !== configuredUser) return null;
@@ -352,7 +366,8 @@ app.post('/api/auth/logout', async (c) => {
     if (!csrfOk) {
       return c.json({ error: 'Cross-site request rejected.' }, 403);
     }
-    edgeRevokedTokens.set(auth.claims.jti, auth.claims.exp);
+    const nowSec = Math.floor(Date.now() / 1000);
+    await revokeTokenD1(c.env.DB, auth.claims.jti, auth.claims.exp, nowSec);
   }
   c.header(
     'Set-Cookie',
@@ -555,14 +570,15 @@ app.post('/api/products/:id/record-price', async (c) => {
 
 app.post('/api/schedule/run-now', async (c) => {
   const products = await getAllProductsD1(c.env.DB);
-  const alerts: AlertLogEntry[] = [];
-  for (const product of products) {
-    const result = await executeProductCheckEdge(c.env, product);
-    if (result.alert) alerts.push(result.alert);
-  }
+  const outcomes = await runEdgeWithConcurrency(products, EDGE_CHECK_CONCURRENCY, (product) =>
+    executeProductCheckEdge(c.env, product)
+  );
+  const alerts = outcomes
+    .map((o) => o.alert)
+    .filter((a): a is AlertLogEntry => a !== null);
   const refreshed = await getAllProductsD1(c.env.DB);
   return c.json({
-    checkedCount: refreshed.length,
+    checkedCount: outcomes.length,
     products: refreshed,
     alerts,
   });
@@ -597,11 +613,12 @@ app.all('/api/schedule/run-due', async (c) => {
   const nowMs = Date.now();
   const products = await getAllProductsD1(c.env.DB);
   const due = products.filter((p) => Date.parse(p.nextCheckAt) <= nowMs);
-  const alerts: AlertLogEntry[] = [];
-  for (const product of due) {
-    const result = await executeProductCheckEdge(c.env, product);
-    if (result.alert) alerts.push(result.alert);
-  }
+  const outcomes = await runEdgeWithConcurrency(due, EDGE_CHECK_CONCURRENCY, (product) =>
+    executeProductCheckEdge(c.env, product)
+  );
+  const alerts = outcomes
+    .map((o) => o.alert)
+    .filter((a): a is AlertLogEntry => a !== null);
 
   return c.json({
     dueCount: due.length,
@@ -635,7 +652,13 @@ app.put('/api/settings', async (c) => {
     typeof body.email?.enabled === 'boolean' ? body.email.enabled : current.email.enabled;
   const emailAddress =
     typeof body.email?.address === 'string' ? body.email.address.trim() : current.email.address;
-  if (emailEnabled && emailAddress && !isValidEmail(emailAddress)) {
+  if (emailEnabled && !isValidEmail(emailAddress)) {
+    return c.json(
+      { error: 'Please enter a valid recipient email address to enable Email alerts.' },
+      400
+    );
+  }
+  if (!emailEnabled && emailAddress && !isValidEmail(emailAddress)) {
     return c.json({ error: 'Please enter a valid recipient email address.' }, 400);
   }
 
@@ -647,7 +670,16 @@ app.put('/api/settings', async (c) => {
     typeof body.telegram?.chatId === 'string'
       ? body.telegram.chatId.trim()
       : current.telegram.chatId;
-  if (telegramChatId && !isValidTelegramChatId(telegramChatId)) {
+  if (telegramEnabled && !isValidTelegramChatId(telegramChatId)) {
+    return c.json(
+      {
+        error:
+          'Enter a valid numeric Telegram Chat ID (5 to 20 digits) to enable Telegram alerts.',
+      },
+      400
+    );
+  }
+  if (!telegramEnabled && telegramChatId && !isValidTelegramChatId(telegramChatId)) {
     return c.json(
       { error: 'Telegram Chat ID must be a numeric ID (5 to 20 digits, e.g. 123456789).' },
       400
@@ -739,9 +771,9 @@ export default {
         const nowMs = Date.now();
         const products = await getAllProductsD1(env.DB);
         const due = products.filter((p) => Date.parse(p.nextCheckAt) <= nowMs);
-        for (const product of due) {
-          await executeProductCheckEdge(env, product);
-        }
+        await runEdgeWithConcurrency(due, EDGE_CHECK_CONCURRENCY, (product) =>
+          executeProductCheckEdge(env, product)
+        );
       })()
     );
   },

@@ -5,6 +5,7 @@ import {
   detectPlatform,
   inferTitleFromUrl,
   normalizeUrlInput,
+  parseLocalePrice,
   sanitizeExternalUrl,
 } from '../src/lib/priceUtils';
 import type { CurrencyCode, UrlPreviewResult } from '../src/types/tracker';
@@ -106,24 +107,7 @@ export async function validatePublicShoppingUrl(rawUrl: string): Promise<URL> {
 }
 
 export function parsePriceNumber(raw: string | number | null | undefined): number | null {
-  if (typeof raw === 'number') {
-    return Number.isFinite(raw) && raw > 0 ? Number(raw.toFixed(2)) : null;
-  }
-  if (!raw || typeof raw !== 'string') return null;
-
-  const cleaned = raw
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  // Match first reasonable price figure with optional commas and decimals
-  const match = cleaned.match(/(?:₹|Rs\.?|INR|\$|USD|£|GBP|€|EUR)?\s*([0-9]{1,3}(?:,[0-9]{2,3})+(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)/i);
-  if (!match) return null;
-
-  const numericStr = match[1].replace(/,/g, '');
-  const value = Number.parseFloat(numericStr);
-  if (!Number.isFinite(value) || value <= 0 || value > 50_000_000) return null;
-  return Number(value.toFixed(2));
+  return parseLocalePrice(raw);
 }
 
 function detectCurrencyCode(raw: string | undefined, fallback: CurrencyCode): CurrencyCode {
@@ -136,6 +120,74 @@ function detectCurrencyCode(raw: string | undefined, fallback: CurrencyCode): Cu
   return fallback;
 }
 
+function collectOfferCandidates(offersNode: unknown): Array<Record<string, unknown>> {
+  if (!offersNode || typeof offersNode !== 'object') return [];
+  const rawList = Array.isArray(offersNode) ? offersNode : [offersNode];
+  const flattened: Array<Record<string, unknown>> = [];
+  for (const item of rawList) {
+    if (!item || typeof item !== 'object') continue;
+    const rec = item as Record<string, unknown>;
+    flattened.push(rec);
+    if (rec.offers) {
+      const nested = Array.isArray(rec.offers) ? rec.offers : [rec.offers];
+      for (const n of nested) {
+        if (n && typeof n === 'object') {
+          flattened.push(n as Record<string, unknown>);
+        }
+      }
+    }
+  }
+  return flattened;
+}
+
+function extractOfferDetails(
+  node: Record<string, unknown>
+): { price?: number; currency?: string; inStock?: boolean } {
+  const candidates = collectOfferCandidates(node.offers);
+  let fallback: { price?: number; currency?: string; inStock?: boolean } = {};
+
+  for (const offer of candidates) {
+    const spec =
+      offer.priceSpecification && typeof offer.priceSpecification === 'object'
+        ? (offer.priceSpecification as Record<string, unknown>)
+        : null;
+    const rawPrice = offer.price ?? offer.lowPrice ?? spec?.price;
+    const parsedPrice = parsePriceNumber(
+      typeof rawPrice === 'number' || typeof rawPrice === 'string' ? rawPrice : null
+    );
+    const currency =
+      typeof offer.priceCurrency === 'string'
+        ? offer.priceCurrency
+        : typeof spec?.priceCurrency === 'string'
+          ? spec.priceCurrency
+          : undefined;
+    const availability = String(offer.availability || '').toLowerCase();
+    const inStock = availability ? !availability.includes('outofstock') : true;
+
+    if (parsedPrice !== null) {
+      if (inStock) {
+        return { price: parsedPrice, currency, inStock };
+      }
+      if (fallback.price === undefined) {
+        fallback = { price: parsedPrice, currency, inStock };
+      }
+    } else if (!fallback.currency && currency) {
+      fallback.currency = currency;
+    }
+  }
+
+  if (fallback.price !== undefined) return fallback;
+
+  const directPrice = parsePriceNumber(
+    typeof node.price === 'number' || typeof node.price === 'string' ? node.price : null
+  );
+  if (directPrice !== null) {
+    return { price: directPrice, currency: fallback.currency, inStock: true };
+  }
+
+  return fallback;
+}
+
 function extractFromJsonLd($: cheerio.CheerioAPI): {
   title?: string;
   price?: number;
@@ -144,6 +196,14 @@ function extractFromJsonLd($: cheerio.CheerioAPI): {
   inStock?: boolean;
 } {
   const scripts = $('script[type="application/ld+json"]');
+  const best: {
+    title?: string;
+    price?: number;
+    currency?: string;
+    image?: string;
+    inStock?: boolean;
+  } = {};
+
   for (let i = 0; i < scripts.length; i++) {
     const raw = $(scripts[i]).text();
     if (!raw) continue;
@@ -163,30 +223,30 @@ function extractFromJsonLd($: cheerio.CheerioAPI): {
           (Array.isArray(typeField) && typeField.includes('Product'));
         if (!isProduct) continue;
 
-        const offers = Array.isArray(node.offers) ? node.offers[0] : node.offers;
-        const rawPrice =
-          offers?.price ??
-          offers?.lowPrice ??
-          offers?.priceSpecification?.price ??
-          node.price;
-        const parsedPrice = parsePriceNumber(rawPrice);
+        const offerInfo = extractOfferDetails(node as Record<string, unknown>);
         const imageField = Array.isArray(node.image) ? node.image[0] : node.image;
         const imageUrl = typeof imageField === 'string' ? imageField : imageField?.url;
-        const availability = String(offers?.availability || '').toLowerCase();
+        const title = typeof node.name === 'string' ? node.name.trim() : undefined;
 
-        return {
-          title: typeof node.name === 'string' ? node.name.trim() : undefined,
-          price: parsedPrice ?? undefined,
-          currency: typeof offers?.priceCurrency === 'string' ? offers.priceCurrency : undefined,
-          image: typeof imageUrl === 'string' ? imageUrl : undefined,
-          inStock: availability ? !availability.includes('outofstock') : true,
-        };
+        if (!best.title && title) best.title = title;
+        if (!best.image && typeof imageUrl === 'string') best.image = imageUrl;
+        if (!best.currency && offerInfo.currency) best.currency = offerInfo.currency;
+
+        if (offerInfo.price !== undefined) {
+          return {
+            title: title || best.title,
+            price: offerInfo.price,
+            currency: offerInfo.currency || best.currency,
+            image: typeof imageUrl === 'string' ? imageUrl : best.image,
+            inStock: offerInfo.inStock ?? true,
+          };
+        }
       }
     } catch {
       // Ignore malformed JSON-LD blocks
     }
   }
-  return {};
+  return best;
 }
 
 export function extractProductFromHtml(html: string, urlStr: string): UrlPreviewResult {
@@ -226,11 +286,15 @@ export function extractProductFromHtml(html: string, urlStr: string): UrlPreview
     const selectorList: string[] = [];
     if (platform === 'amazon') {
       selectorList.push(
-        '.a-price .a-offscreen',
+        '#corePriceDisplay_desktop_feature_div .priceToPay .a-offscreen',
+        '#corePrice_feature_div .priceToPay .a-offscreen',
+        '.priceToPay .a-offscreen',
+        '#corePriceDisplay_desktop_feature_div .a-price .a-offscreen',
+        '#apex_desktop .a-price .a-offscreen',
         '#priceblock_ourprice',
         '#priceblock_dealprice',
         '#corePriceDisplay_desktop_feature_div .a-price-whole',
-        '.priceToPay .a-offscreen'
+        '.a-price .a-offscreen'
       );
     } else if (platform === 'flipkart') {
       selectorList.push('.Nx9bqj.CxhGGd', '.Nx9bqj', '._30jeq3._16Jk6d', '._30jeq3');

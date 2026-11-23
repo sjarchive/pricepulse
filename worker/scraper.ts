@@ -2,6 +2,7 @@ import {
   detectPlatform,
   inferTitleFromUrl,
   normalizeUrlInput,
+  parseLocalePrice,
   sanitizeExternalUrl,
 } from '../src/lib/priceUtils';
 import type { CurrencyCode, UrlPreviewResult } from '../src/types/tracker';
@@ -24,6 +25,28 @@ function isPrivateOrReservedIpv4(host: string): boolean {
   if (a === 192 && b === 168) return true;
   if (a === 100 && b >= 64 && b <= 127) return true;
   if (a >= 224) return true;
+  return false;
+}
+
+function isPrivateOrReservedIpv6(host: string): boolean {
+  if (!host.includes(':')) return false;
+  const clean = host.toLowerCase();
+  if (clean === '::1' || clean === '::') return true;
+  if (clean.startsWith('fc') || clean.startsWith('fd')) return true;
+  if (
+    clean.startsWith('fe8') ||
+    clean.startsWith('fe9') ||
+    clean.startsWith('fea') ||
+    clean.startsWith('feb')
+  ) {
+    return true;
+  }
+  if (clean.startsWith('::ffff:')) {
+    const mapped = clean.slice(7);
+    if (isPrivateOrReservedIpv4(mapped)) return true;
+    // Also block hex-encoded IPv4-mapped loopback/private (e.g. ::ffff:7f00:1)
+    if (mapped.includes(':')) return true;
+  }
   return false;
 }
 
@@ -51,21 +74,13 @@ export function validateEdgePublicUrl(rawUrl: string): URL {
     host.endsWith('.localhost') ||
     host.endsWith('.local') ||
     host.endsWith('.internal') ||
-    host === '::1' ||
-    host === '::' ||
-    host.startsWith('fc') ||
-    host.startsWith('fd') ||
-    host.startsWith('fe8') ||
-    host.startsWith('fe9') ||
-    host.startsWith('fea') ||
-    host.startsWith('feb') ||
-    host.startsWith('::ffff:') ||
+    isPrivateOrReservedIpv6(host) ||
     isPrivateOrReservedIpv4(host)
   ) {
     throw new Error('Local, private, or internal hostnames cannot be tracked.');
   }
 
-  if (!host.includes('.')) {
+  if (!host.includes('.') && !host.includes(':')) {
     throw new Error('Please enter a valid public store domain.');
   }
 
@@ -73,19 +88,7 @@ export function validateEdgePublicUrl(rawUrl: string): URL {
 }
 
 export function parseEdgePriceNumber(raw: string | number | null | undefined): number | null {
-  if (typeof raw === 'number') {
-    return Number.isFinite(raw) && raw > 0 ? Number(raw.toFixed(2)) : null;
-  }
-  if (!raw || typeof raw !== 'string') return null;
-
-  const cleaned = raw.replace(/&nbsp;/gi, ' ').replace(/\s+/g, ' ').trim();
-  const match = cleaned.match(
-    /(?:₹|Rs\.?|INR|\$|USD|£|GBP|€|EUR)?\s*([0-9]{1,3}(?:,[0-9]{2,3})+(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)/i
-  );
-  if (!match) return null;
-  const value = Number.parseFloat(match[1].replace(/,/g, ''));
-  if (!Number.isFinite(value) || value <= 0 || value > 50_000_000) return null;
-  return Number(value.toFixed(2));
+  return parseLocalePrice(raw);
 }
 
 function decodeHtmlEntities(str: string): string {
@@ -127,6 +130,72 @@ function extractMetaTag(html: string, attrName: string, attrValue: string): stri
   return m2?.[1] ? decodeHtmlEntities(m2[1]) : null;
 }
 
+function collectEdgeOffers(offersNode: unknown): Array<Record<string, unknown>> {
+  if (!offersNode || typeof offersNode !== 'object') return [];
+  const rawList = Array.isArray(offersNode) ? offersNode : [offersNode];
+  const flattened: Array<Record<string, unknown>> = [];
+  for (const item of rawList) {
+    if (!item || typeof item !== 'object') continue;
+    const rec = item as Record<string, unknown>;
+    flattened.push(rec);
+    if (rec.offers) {
+      const nested = Array.isArray(rec.offers) ? rec.offers : [rec.offers];
+      for (const n of nested) {
+        if (n && typeof n === 'object') {
+          flattened.push(n as Record<string, unknown>);
+        }
+      }
+    }
+  }
+  return flattened;
+}
+
+function extractEdgeOfferDetails(
+  node: Record<string, unknown>
+): { price?: number; currency?: string; inStock?: boolean } {
+  const candidates = collectEdgeOffers(node.offers);
+  let fallback: { price?: number; currency?: string; inStock?: boolean } = {};
+
+  for (const offer of candidates) {
+    const spec =
+      offer.priceSpecification && typeof offer.priceSpecification === 'object'
+        ? (offer.priceSpecification as Record<string, unknown>)
+        : null;
+    const rawPrice = offer.price ?? offer.lowPrice ?? spec?.price;
+    const parsedPrice = parseEdgePriceNumber(
+      typeof rawPrice === 'number' || typeof rawPrice === 'string' ? rawPrice : null
+    );
+    const currency =
+      typeof offer.priceCurrency === 'string'
+        ? offer.priceCurrency
+        : typeof spec?.priceCurrency === 'string'
+          ? spec.priceCurrency
+          : undefined;
+    const availability = String(offer.availability || '').toLowerCase();
+    const inStock = availability ? !availability.includes('outofstock') : true;
+
+    if (parsedPrice !== null) {
+      if (inStock) return { price: parsedPrice, currency, inStock };
+      if (fallback.price === undefined) {
+        fallback = { price: parsedPrice, currency, inStock };
+      }
+    } else if (!fallback.currency && currency) {
+      fallback.currency = currency;
+    }
+  }
+
+  if (fallback.price !== undefined) return fallback;
+
+  const directPrice = parseEdgePriceNumber(
+    typeof node.price === 'number' || typeof node.price === 'string' ? node.price : null
+  );
+  if (directPrice !== null) {
+    return { price: directPrice, currency: fallback.currency, inStock: true };
+  }
+
+  return fallback;
+}
+
 function extractJsonLdProduct(html: string): {
   title?: string;
   price?: number;
@@ -135,6 +204,14 @@ function extractJsonLdProduct(html: string): {
   inStock?: boolean;
 } {
   const scriptRegex = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  const best: {
+    title?: string;
+    price?: number;
+    currency?: string;
+    image?: string;
+    inStock?: boolean;
+  } = {};
+
   let match: RegExpExecArray | null;
   while ((match = scriptRegex.exec(html)) !== null) {
     const raw = match[1]?.trim();
@@ -153,30 +230,30 @@ function extractJsonLdProduct(html: string): {
         const isProduct = t === 'Product' || (Array.isArray(t) && t.includes('Product'));
         if (!isProduct) continue;
 
-        const offers = Array.isArray(node.offers) ? node.offers[0] : node.offers;
-        const rawPrice =
-          offers?.price ??
-          offers?.lowPrice ??
-          offers?.priceSpecification?.price ??
-          node.price;
-        const parsedPrice = parseEdgePriceNumber(rawPrice);
+        const offerInfo = extractEdgeOfferDetails(node as Record<string, unknown>);
         const img = Array.isArray(node.image) ? node.image[0] : node.image;
         const imageUrl = typeof img === 'string' ? img : img?.url;
-        const availability = String(offers?.availability || '').toLowerCase();
+        const title = typeof node.name === 'string' ? decodeHtmlEntities(node.name) : undefined;
 
-        return {
-          title: typeof node.name === 'string' ? decodeHtmlEntities(node.name) : undefined,
-          price: parsedPrice ?? undefined,
-          currency: typeof offers?.priceCurrency === 'string' ? offers.priceCurrency : undefined,
-          image: typeof imageUrl === 'string' ? imageUrl : undefined,
-          inStock: availability ? !availability.includes('outofstock') : true,
-        };
+        if (!best.title && title) best.title = title;
+        if (!best.image && typeof imageUrl === 'string') best.image = imageUrl;
+        if (!best.currency && offerInfo.currency) best.currency = offerInfo.currency;
+
+        if (offerInfo.price !== undefined) {
+          return {
+            title: title || best.title,
+            price: offerInfo.price,
+            currency: offerInfo.currency || best.currency,
+            image: typeof imageUrl === 'string' ? imageUrl : best.image,
+            inStock: offerInfo.inStock ?? true,
+          };
+        }
       }
     } catch {
       // Skip malformed JSON-LD blocks
     }
   }
-  return {};
+  return best;
 }
 
 export function extractProductFromHtmlEdge(html: string, urlStr: string): UrlPreviewResult {
@@ -214,9 +291,20 @@ export function extractProductFromHtmlEdge(html: string, urlStr: string): UrlPre
   }
 
   if (price === null && platform === 'amazon') {
+    const buyBoxIdx = html.search(
+      /id=["'](?:corePriceDisplay_desktop_feature_div|corePrice_feature_div|apex_desktop)["']/i
+    );
+    const buyBoxSlice = buyBoxIdx >= 0 ? html.slice(buyBoxIdx, buyBoxIdx + 8000) : '';
     const m =
-      html.match(/class=["'][^"']*a-offscreen[^"']*["'][^>]*>([^<]+)</i) ||
-      html.match(/id=["']priceblock_(?:our|deal)price["'][^>]*>([^<]+)</i);
+      buyBoxSlice.match(
+        /priceToPay[\s\S]{0,400}?class=["'][^"']*a-offscreen[^"']*["'][^>]*>([^<]+)</i
+      ) ||
+      buyBoxSlice.match(/class=["'][^"']*a-offscreen[^"']*["'][^>]*>([^<]+)</i) ||
+      html.match(
+        /priceToPay[\s\S]{0,400}?class=["'][^"']*a-offscreen[^"']*["'][^>]*>([^<]+)</i
+      ) ||
+      html.match(/id=["']priceblock_(?:our|deal)price["'][^>]*>([^<]+)</i) ||
+      html.match(/class=["'][^"']*a-offscreen[^"']*["'][^>]*>([^<]+)</i);
     if (m?.[1]) {
       price = parseEdgePriceNumber(m[1]);
       currencyRaw = currencyRaw || m[1];
@@ -312,17 +400,75 @@ function stripTrackingParams(url: URL): URL {
 
 function buildCompactTextForAi(html: string): string {
   const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-  const titlePart = titleMatch?.[1] ? `Page Title: ${decodeHtmlEntities(titleMatch[1])}\n` : '';
+  const h1Match = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+  const descMeta = extractMetaTag(html, 'name', 'description') || extractMetaTag(html, 'property', 'og:description');
+
+  const headerParts = [
+    titleMatch?.[1] ? `Page Title: ${decodeHtmlEntities(titleMatch[1])}` : '',
+    h1Match?.[1] ? `Product Heading: ${decodeHtmlEntities(h1Match[1].replace(/<[^>]+>/g, ' '))}` : '',
+    descMeta ? `Meta Description: ${descMeta}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
 
   const stripped = html
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<svg[\s\S]*?<\/svg>/gi, ' ')
     .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
+    .replace(/<nav[\s\S]*?<\/nav>/gi, ' ')
+    .replace(/<header[\s\S]*?<\/header>/gi, ' ')
+    .replace(/<footer[\s\S]*?<\/footer>/gi, ' ')
     .replace(/<[^>]+>/g, ' ');
 
   const text = decodeHtmlEntities(stripped);
-  return `${titlePart}${text}`.slice(0, 3800);
+  const budget = Math.max(1200, 3800 - headerParts.length - 40);
+
+  if (text.length <= budget) {
+    return `${headerParts}\n${text}`.trim().slice(0, 3800);
+  }
+
+  // Focus around the first currency/price mention so navigation text doesn't crowd out the selling price
+  const priceMatch = text.match(/(?:₹|Rs\.?|INR|\$|£|€)\s*[0-9]{1,3}(?:[.,][0-9]{2,3})*/i);
+  if (priceMatch && typeof priceMatch.index === 'number') {
+    const start = Math.max(0, priceMatch.index - 700);
+    const windowSlice = text.slice(start, start + budget);
+    return `${headerParts}\n${windowSlice}`.trim().slice(0, 3800);
+  }
+
+  return `${headerParts}\n${text.slice(0, budget)}`.trim().slice(0, 3800);
+}
+
+function extractFirstJsonObject(raw: string): string | null {
+  const start = raw.indexOf('{');
+  if (start === -1) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < raw.length; i++) {
+    const ch = raw[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === '{') {
+      depth++;
+    } else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        return raw.slice(start, i + 1);
+      }
+    }
+  }
+  return null;
 }
 
 export async function extractProductWithWorkersAi(
@@ -358,10 +504,10 @@ export async function extractProductWithWorkersAi(
         ? result.response
         : '';
 
-    const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return fallback;
+    const jsonText = extractFirstJsonObject(rawText);
+    if (!jsonText) return fallback;
 
-    const parsed = JSON.parse(jsonMatch[0]) as {
+    const parsed = JSON.parse(jsonText) as {
       title?: unknown;
       price?: unknown;
       currency?: unknown;

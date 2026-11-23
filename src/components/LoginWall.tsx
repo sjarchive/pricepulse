@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { Eye, EyeOff, Lock, ShieldCheck } from 'lucide-react';
 import { loginWithCredentials, setupInitialAccount } from '../api/client';
 
@@ -15,6 +15,12 @@ export function LoginWall({ configured, initialNotice, onAuthenticated }: LoginW
   const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(initialNotice || null);
+
+  useEffect(() => {
+    if (initialNotice) {
+      setError(initialNotice);
+    }
+  }, [initialNotice]);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();

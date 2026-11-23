@@ -354,6 +354,61 @@ export function evaluatePriceDrop(
   };
 }
 
+export function parseLocalePrice(raw: string | number | null | undefined): number | null {
+  if (typeof raw === 'number') {
+    return Number.isFinite(raw) && raw > 0 && raw <= 50_000_000 ? Number(raw.toFixed(2)) : null;
+  }
+  if (!raw || typeof raw !== 'string') return null;
+
+  const cleaned = raw
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/\u00a0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  // Match first reasonable numeric token (supports US/IN commas+dot and European dots+comma)
+  const match = cleaned.match(
+    /(?:₹|Rs\.?|INR|\$|USD|£|GBP|€|EUR)?\s*([0-9]+(?:[.,\s][0-9]{2,3})*(?:[.,][0-9]{1,2})?)/i
+  );
+  if (!match) return null;
+
+  let token = match[1].replace(/\s+/g, '');
+  const hasDot = token.includes('.');
+  const hasComma = token.includes(',');
+
+  if (hasDot && hasComma) {
+    // Whichever separator appears last is the decimal separator (e.g. 1.299,99 vs 1,299.99)
+    if (token.lastIndexOf(',') > token.lastIndexOf('.')) {
+      token = token.replace(/\./g, '').replace(',', '.');
+    } else {
+      token = token.replace(/,/g, '');
+    }
+  } else if (hasComma) {
+    // Single comma with 1-2 trailing digits (e.g. 49,95) -> European decimal; otherwise thousands separator
+    if (/^\d+,\d{1,2}$/.test(token)) {
+      token = token.replace(',', '.');
+    } else {
+      token = token.replace(/,/g, '');
+    }
+  } else if (hasDot) {
+    // Multiple dots (e.g. 1.299.000) or single dot with exactly 3 trailing digits and Euro context (e.g. €1.299)
+    const dotParts = token.split('.');
+    const isMultiDotThousands =
+      dotParts.length > 2 && dotParts.slice(1).every((part) => part.length === 3);
+    const isEuroDotThousands =
+      dotParts.length === 2 &&
+      dotParts[1].length === 3 &&
+      /(?:€|EUR)/i.test(cleaned);
+    if (isMultiDotThousands || isEuroDotThousands) {
+      token = token.replace(/\./g, '');
+    }
+  }
+
+  const value = Number.parseFloat(token);
+  if (!Number.isFinite(value) || value <= 0 || value > 50_000_000) return null;
+  return Number(value.toFixed(2));
+}
+
 export function formatCurrency(amount: number, currency: CurrencyCode): string {
   const localeMap: Record<CurrencyCode, string> = {
     INR: 'en-IN',
@@ -370,6 +425,28 @@ export function formatCurrency(amount: number, currency: CurrencyCode): string {
   } catch {
     const symbols: Record<CurrencyCode, string> = { INR: '₹', USD: '$', GBP: '£', EUR: '€' };
     return `${symbols[currency] || ''}${amount.toFixed(2)}`;
+  }
+}
+
+export function formatCompactCurrency(amount: number, currency: CurrencyCode): string {
+  const symbols: Record<CurrencyCode, string> = {
+    INR: '₹',
+    USD: '$',
+    GBP: '£',
+    EUR: '€',
+  };
+  const localeMap: Record<CurrencyCode, string> = {
+    INR: 'en-IN',
+    USD: 'en-US',
+    GBP: 'en-GB',
+    EUR: 'de-DE',
+  };
+  const sym = symbols[currency] || '';
+  const rounded = Math.abs(amount) >= 100 ? Math.round(amount) : Number(amount.toFixed(2));
+  try {
+    return `${sym}${rounded.toLocaleString(localeMap[currency] || 'en-US')}`;
+  } catch {
+    return `${sym}${rounded}`;
   }
 }
 

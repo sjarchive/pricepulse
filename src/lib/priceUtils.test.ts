@@ -4,9 +4,11 @@ import {
   computeNextCheckAt,
   detectPlatform,
   evaluatePriceDrop,
+  formatCompactCurrency,
   inferTitleFromUrl,
   isValidEmail,
   isValidTelegramChatId,
+  parseLocalePrice,
   sanitizeExternalUrl,
   validateCheckInterval,
 } from './priceUtils';
@@ -215,3 +217,102 @@ test('extractProductWithWorkersAi parses JSON fallback response and refuses null
   assert.equal(fallbackResult.price, null);
   assert.equal(fallbackResult.fetchStatus, 'partial');
 });
+
+test('parseLocalePrice accurately parses US, Indian, and European price formats', () => {
+  assert.equal(parseLocalePrice('₹1,24,999'), 124999);
+  assert.equal(parseLocalePrice('₹24,990.50'), 24990.5);
+  assert.equal(parseLocalePrice('$1,299.99'), 1299.99);
+  assert.equal(parseLocalePrice('€1.299,00'), 1299);
+  assert.equal(parseLocalePrice('1.299,99 €'), 1299.99);
+  assert.equal(parseLocalePrice('EUR 49,95'), 49.95);
+  assert.equal(parseLocalePrice('€1.299'), 1299);
+  assert.equal(parseLocalePrice('£799.00'), 799);
+});
+
+test('validateEdgePublicUrl allows public domains starting with fc/fd/fe while blocking IPv6 private literals', () => {
+  assert.equal(validateEdgePublicUrl('https://fc-moto.de/en/helmet').hostname, 'fc-moto.de');
+  assert.equal(validateEdgePublicUrl('https://fdnyshop.com/product/jacket').hostname, 'fdnyshop.com');
+  assert.equal(validateEdgePublicUrl('https://fe88store.com/item/1').hostname, 'fe88store.com');
+  assert.throws(() => validateEdgePublicUrl('http://[::1]/secret'));
+  assert.throws(() => validateEdgePublicUrl('http://[fc00::1]/secret'));
+  assert.throws(() => validateEdgePublicUrl('http://[fd12:3456::1]/secret'));
+  assert.throws(() => validateEdgePublicUrl('http://[fe80::1]/secret'));
+});
+
+test('scrapers prioritize Amazon buy-box price over earlier unrelated a-offscreen values', () => {
+  const html = `
+    <html><head><title>Sony Camera - Amazon.in</title></head>
+    <body>
+      <div class="nav-delivery"><span class="a-price"><span class="a-offscreen">₹40.00</span></span></div>
+      <div id="corePriceDisplay_desktop_feature_div">
+        <span class="a-price priceToPay"><span class="a-offscreen">₹89,990.00</span></span>
+      </div>
+    </body></html>
+  `;
+  const nodeRes = extractProductFromHtml(html, 'https://www.amazon.in/dp/B09CAMERA1');
+  const edgeRes = extractProductFromHtmlEdge(html, 'https://www.amazon.in/dp/B09CAMERA1');
+  assert.equal(nodeRes.price, 89990);
+  assert.equal(edgeRes.price, 89990);
+});
+
+test('scrapers scan multiple JSON-LD Product blocks and nested AggregateOffer offers', () => {
+  const html = `
+    <html><head>
+      <script type="application/ld+json">
+        {"@type":"Product","name":"Apple iPad Air M3"}
+      </script>
+      <script type="application/ld+json">
+        {
+          "@type": "Product",
+          "name": "Apple iPad Air M3",
+          "offers": {
+            "@type": "AggregateOffer",
+            "offers": [
+              {"@type": "Offer", "price": "64999", "priceCurrency": "INR", "availability": "https://schema.org/OutOfStock"},
+              {"@type": "Offer", "price": "59990", "priceCurrency": "INR", "availability": "https://schema.org/InStock"}
+            ]
+          }
+        }
+      </script>
+    </head><body></body></html>
+  `;
+  const nodeRes = extractProductFromHtml(html, 'https://www.croma.com/apple-ipad-air/p/123');
+  const edgeRes = extractProductFromHtmlEdge(html, 'https://www.croma.com/apple-ipad-air/p/123');
+  assert.equal(nodeRes.price, 59990);
+  assert.equal(edgeRes.price, 59990);
+  assert.equal(nodeRes.inStock, true);
+  assert.equal(edgeRes.inStock, true);
+});
+
+test('extractProductWithWorkersAi targets price window on long pages and handles trailing text with braces', async () => {
+  const longNav = '<nav>' + 'Category Link Item '.repeat(400) + '</nav>';
+  const longPadding = '<div>' + 'Promo banner text without currency '.repeat(250) + '</div>';
+  const html = `
+    <html><head><title>Bose QuietComfort Ultra</title></head>
+    <body>${longNav}${longPadding}<h1>Bose QuietComfort Ultra</h1><main>Buy today for ₹29,900 with free delivery.</main></body></html>
+  `;
+  const url = 'https://www.reliancedigital.in/bose-qc-ultra/p/999';
+  const base = extractProductFromHtmlEdge(html, url);
+  let capturedPrompt = '';
+  const mockAi = {
+    async run(_model: string, input: { messages: Array<{ content: string }> }) {
+      capturedPrompt = input.messages[1].content;
+      return {
+        response:
+          'Here is the extracted data: {"title":"Bose QuietComfort Ultra","price":29900,"currency":"INR","inStock":true} (note: {currency confirmed})',
+      };
+    },
+  };
+  const res = await extractProductWithWorkersAi(mockAi, html, url, base);
+  assert.match(capturedPrompt, /29,900/);
+  assert.equal(res.fetchStatus, 'extracted');
+  assert.equal(res.price, 29900);
+});
+
+test('formatCompactCurrency renders symbols for INR, USD, GBP, and EUR', () => {
+  assert.equal(formatCompactCurrency(24990, 'INR'), '₹24,990');
+  assert.equal(formatCompactCurrency(1299, 'USD'), '$1,299');
+  assert.equal(formatCompactCurrency(499, 'GBP'), '£499');
+  assert.equal(formatCompactCurrency(1299, 'EUR'), '€1.299');
+});
+

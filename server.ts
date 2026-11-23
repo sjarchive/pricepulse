@@ -39,7 +39,6 @@ const EPHEMERAL_SESSION_SECRET = generateRandomHex(32);
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const MAX_LOGIN_FAILURES = 5;
 const failedLoginBuckets = new Map<string, number[]>();
-const revokedTokenIds = new Map<string, number>();
 
 function getSessionSecret(): string {
   return process.env.AUTH_SESSION_SECRET?.trim() || EPHEMERAL_SESSION_SECRET;
@@ -53,10 +52,24 @@ function getEnvAuthConfig() {
   };
 }
 
-function pruneRevokedTokens(nowSec: number): void {
-  for (const [jti, exp] of revokedTokenIds.entries()) {
-    if (exp <= nowSec) revokedTokenIds.delete(jti);
+const CHECK_CONCURRENCY = 4;
+
+async function runWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = [];
+  for (let i = 0; i < items.length; i += concurrency) {
+    const batch = items.slice(i, i + concurrency);
+    const settled = await Promise.allSettled(batch.map((item) => worker(item)));
+    for (const outcome of settled) {
+      if (outcome.status === 'fulfilled') {
+        results.push(outcome.value);
+      }
+    }
   }
+  return results;
 }
 
 function checkLoginRateLimit(ipKey: string): { allowed: boolean; retryAfterSec: number } {
@@ -189,8 +202,7 @@ async function startServer() {
     const claims = await verifySessionToken(token, getSessionSecret());
     if (!claims) return null;
     const nowSec = Math.floor(Date.now() / 1000);
-    pruneRevokedTokens(nowSec);
-    if (revokedTokenIds.has(claims.jti)) return null;
+    if (trackerStore.isTokenRevoked(claims.jti, nowSec)) return null;
     const configuredUser = resolveConfiguredUsername(
       getEnvAuthConfig(),
       trackerStore.getAuthCredentials()
@@ -304,7 +316,8 @@ async function startServer() {
         res.status(403).json({ error: 'Cross-site request rejected.' });
         return;
       }
-      revokedTokenIds.set(auth.claims.jti, auth.claims.exp);
+      const nowSec = Math.floor(Date.now() / 1000);
+      trackerStore.revokeToken(auth.claims.jti, auth.claims.exp, nowSec);
     }
     res.setHeader('Set-Cookie', buildClearSessionCookieHeader({ isHttps: isHttpsRequest(req) }));
     res.json({ loggedOut: true });
@@ -563,17 +576,15 @@ async function startServer() {
   // Run scheduled check cycle for all products now
   app.post('/api/schedule/run-now', async (_req, res) => {
     const products = trackerStore.getProducts();
-    const alerts: AlertLogEntry[] = [];
-    const updatedProducts: TrackedProduct[] = [];
-
-    for (const product of products) {
-      const result = await executeProductCheck(product);
-      updatedProducts.push(result.product);
-      if (result.alert) alerts.push(result.alert);
-    }
+    const outcomes = await runWithConcurrency(products, CHECK_CONCURRENCY, (product) =>
+      executeProductCheck(product)
+    );
+    const alerts = outcomes
+      .map((o) => o.alert)
+      .filter((a): a is AlertLogEntry => a !== null);
 
     res.json({
-      checkedCount: updatedProducts.length,
+      checkedCount: outcomes.length,
       products: trackerStore.getProducts(),
       alerts,
     });
@@ -609,7 +620,11 @@ async function startServer() {
       typeof body.email?.enabled === 'boolean' ? body.email.enabled : current.email.enabled;
     const emailAddress =
       typeof body.email?.address === 'string' ? body.email.address.trim() : current.email.address;
-    if (emailEnabled && emailAddress && !isValidEmail(emailAddress)) {
+    if (emailEnabled && !isValidEmail(emailAddress)) {
+      res.status(400).json({ error: 'Please enter a valid recipient email address to enable Email alerts.' });
+      return;
+    }
+    if (!emailEnabled && emailAddress && !isValidEmail(emailAddress)) {
       res.status(400).json({ error: 'Please enter a valid recipient email address.' });
       return;
     }
@@ -622,7 +637,13 @@ async function startServer() {
       typeof body.telegram?.chatId === 'string'
         ? body.telegram.chatId.trim()
         : current.telegram.chatId;
-    if (telegramChatId && !isValidTelegramChatId(telegramChatId)) {
+    if (telegramEnabled && !isValidTelegramChatId(telegramChatId)) {
+      res.status(400).json({
+        error: 'Enter a valid numeric Telegram Chat ID (5 to 20 digits) to enable Telegram alerts.',
+      });
+      return;
+    }
+    if (!telegramEnabled && telegramChatId && !isValidTelegramChatId(telegramChatId)) {
       res.status(400).json({
         error: 'Telegram Chat ID must be a numeric ID (5 to 20 digits, e.g. 123456789).',
       });
@@ -719,9 +740,9 @@ async function startServer() {
       const dueProducts = trackerStore
         .getProducts()
         .filter((p) => Date.parse(p.nextCheckAt) <= nowMs);
-      for (const product of dueProducts) {
-        await executeProductCheck(product);
-      }
+      await runWithConcurrency(dueProducts, CHECK_CONCURRENCY, (product) =>
+        executeProductCheck(product)
+      );
     } finally {
       schedulerRunning = false;
     }

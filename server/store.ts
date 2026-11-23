@@ -13,6 +13,7 @@ export interface TrackerDatabase {
   settings: AlertSettings;
   alerts: AlertLogEntry[];
   auth?: StoredAuthRecord | null;
+  revokedTokens?: Record<string, number>;
 }
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
@@ -167,6 +168,34 @@ class TrackerStore {
     this.data.auth = record;
     this.persist(this.data);
     return record;
+  }
+
+  public isTokenRevoked(jti: string, nowSec: number): boolean {
+    const map = this.data.revokedTokens;
+    if (!map) return false;
+    const exp = map[jti];
+    if (typeof exp !== 'number') return false;
+    if (exp <= nowSec) {
+      delete map[jti];
+      this.persist(this.data);
+      return false;
+    }
+    return true;
+  }
+
+  public revokeToken(jti: string, expSec: number, nowSec: number): void {
+    const next: Record<string, number> = {};
+    const existing = this.data.revokedTokens || {};
+    for (const [key, exp] of Object.entries(existing)) {
+      if (typeof exp === 'number' && exp > nowSec) {
+        next[key] = exp;
+      }
+    }
+    if (expSec > nowSec) {
+      next[jti] = expSec;
+    }
+    this.data.revokedTokens = next;
+    this.persist(this.data);
   }
 }
 

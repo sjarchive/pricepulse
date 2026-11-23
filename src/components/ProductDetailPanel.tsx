@@ -11,30 +11,33 @@ import {
 } from 'recharts';
 import { ExternalLink, RefreshCw, X } from 'lucide-react';
 import {
+  formatCompactCurrency,
   formatCountdown,
   formatCurrency,
   formatRelativeTime,
   sanitizeExternalUrl,
   validateCheckInterval,
 } from '../lib/priceUtils';
-import type { TrackedProduct } from '../types/tracker';
+import type { AlertLogEntry, TrackedProduct } from '../types/tracker';
 import { ProductThumbnail } from './ProductThumbnail';
 
 interface ProductDetailPanelProps {
   product: TrackedProduct;
   checking: boolean;
+  nowMs: number;
   onClose: () => void;
-  onCheckNow: (product: TrackedProduct) => Promise<void>;
+  onCheckNow: (product: TrackedProduct) => Promise<{ product: TrackedProduct; alert: AlertLogEntry | null }>;
   onUpdateProduct: (
     id: string,
     patch: { targetPrice: number | null; checkIntervalHours: number }
   ) => Promise<void>;
-  onRecordPrice: (id: string, price: number) => Promise<void>;
+  onRecordPrice: (id: string, price: number) => Promise<AlertLogEntry | null>;
 }
 
 export function ProductDetailPanel({
   product,
   checking,
+  nowMs,
   onClose,
   onCheckNow,
   onUpdateProduct,
@@ -57,10 +60,27 @@ export function ProductDetailPanel({
   }, [product.id, product.targetPrice, product.checkIntervalHours]);
 
   const chartData = useMemo(() => {
+    const timestamps = product.history
+      .map((p) => Date.parse(p.timestamp))
+      .filter((ms) => !Number.isNaN(ms));
+    const spanMs =
+      timestamps.length >= 2
+        ? Math.max(...timestamps) - Math.min(...timestamps)
+        : 0;
+    const isShortSpan = spanMs <= 48 * 60 * 60 * 1000;
+    const uniqueDays = new Set(
+      product.history.map((p) => new Date(p.timestamp).toDateString())
+    ).size;
+
     return product.history.map((point) => {
       const dt = new Date(point.timestamp);
+      const label = isShortSpan
+        ? uniqueDays <= 1
+          ? dt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+          : dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: 'numeric' })
+        : dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
       return {
-        label: dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        label,
         fullTime: dt.toLocaleString(),
         price: point.price,
       };
@@ -70,7 +90,7 @@ export function ProductDetailPanel({
   const avgPrice = useMemo(() => {
     if (product.history.length === 0) return product.currentPrice;
     const sum = product.history.reduce((acc, p) => acc + p.price, 0);
-    return Math.round(sum / product.history.length);
+    return Number((sum / product.history.length).toFixed(2));
   }, [product.history, product.currentPrice]);
 
   async function handleSaveTracking(e: FormEvent) {
@@ -110,6 +130,36 @@ export function ProductDetailPanel({
     }
   }
 
+  async function handleCheckLiveNow() {
+    setFeedback(null);
+    try {
+      const { product: updated, alert } = await onCheckNow(product);
+      if (alert) {
+        setFeedback({
+          type: 'ok',
+          text: 'Live price drop detected — instant alerts dispatched to your enabled channels.',
+        });
+      } else if (updated.lastCheckStatus === 'ok') {
+        setFeedback({
+          type: 'ok',
+          text: updated.lastCheckNote || 'Live price checked successfully.',
+        });
+      } else {
+        setFeedback({
+          type: 'err',
+          text:
+            updated.lastCheckNote ||
+            'Could not extract a live price from this store right now. You can record an observed price below.',
+        });
+      }
+    } catch (err) {
+      setFeedback({
+        type: 'err',
+        text: err instanceof Error ? err.message : 'Failed to check live price.',
+      });
+    }
+  }
+
   async function handleRecordObservedPrice(e: FormEvent) {
     e.preventDefault();
     setFeedback(null);
@@ -119,15 +169,17 @@ export function ProductDetailPanel({
       return;
     }
 
+    const previousPrice = product.currentPrice;
     setRecordingPrice(true);
     try {
-      await onRecordPrice(product.id, val);
+      const alert = await onRecordPrice(product.id, val);
       setManualPriceInput('');
       setFeedback({
         type: 'ok',
-        text:
-          val < product.currentPrice
-            ? 'Price drop recorded — instant alerts dispatched to your enabled channels.'
+        text: alert
+          ? 'Price drop recorded — instant alerts dispatched to your enabled channels.'
+          : val < previousPrice
+            ? 'Lower price recorded to history. No alert fired under your current alert trigger rules.'
             : 'New price point logged to history.',
       });
     } catch (err) {
@@ -160,9 +212,9 @@ export function ProductDetailPanel({
             <p className="text-xs text-slate-500 leading-relaxed">
               <span className="font-medium text-slate-700">{product.platformLabel}</span>
               {' · '}
-              <span>Last checked {formatRelativeTime(product.lastCheckedAt)}</span>
+              <span>Last checked {formatRelativeTime(product.lastCheckedAt, nowMs)}</span>
               {' · '}
-              <span>Next check {formatCountdown(product.nextCheckAt)}</span>
+              <span>Next check {formatCountdown(product.nextCheckAt, nowMs)}</span>
             </p>
             <h3 className="font-display text-base sm:text-lg font-semibold text-slate-900 mt-1 leading-snug break-words">
               {product.title}
@@ -170,7 +222,7 @@ export function ProductDetailPanel({
             <div className="mt-2.5 flex flex-wrap items-center gap-4 text-xs">
               <button
                 type="button"
-                onClick={() => onCheckNow(product)}
+                onClick={handleCheckLiveNow}
                 disabled={checking}
                 className="inline-flex items-center gap-1.5 font-medium text-blue-700 hover:text-blue-800 disabled:opacity-50 cursor-pointer"
               >
@@ -264,13 +316,9 @@ export function ProductDetailPanel({
                 tick={{ fontSize: 11, fill: '#64748B' }}
                 axisLine={false}
                 tickLine={false}
-                width={68}
+                width={72}
                 domain={['auto', 'auto']}
-                tickFormatter={(val: number) =>
-                  product.currency === 'INR'
-                    ? `₹${Math.round(val).toLocaleString('en-IN')}`
-                    : `${val}`
-                }
+                tickFormatter={(val: number) => formatCompactCurrency(val, product.currency)}
               />
               <Tooltip
                 cursor={{ stroke: '#94A3B8', strokeWidth: 1, strokeDasharray: '4 4' }}
@@ -304,6 +352,7 @@ export function ProductDetailPanel({
                 strokeWidth={2}
                 fill="url(#priceFill)"
                 animationDuration={220}
+                dot={chartData.length <= 2 ? { r: 3.5, fill: '#1D4ED8', strokeWidth: 0 } : false}
                 activeDot={{ r: 4, fill: '#1D4ED8' }}
               />
             </AreaChart>

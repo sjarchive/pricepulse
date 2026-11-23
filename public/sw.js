@@ -9,17 +9,31 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const targetUrl = (event.notification.data && event.notification.data.url) || '/';
+  const rawUrl = (event.notification.data && event.notification.data.url) || '/';
+  let isExternal = false;
+  try {
+    const parsed = new URL(rawUrl, self.location.origin);
+    isExternal =
+      (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
+      parsed.origin !== self.location.origin;
+  } catch {
+    isExternal = false;
+  }
+
   event.waitUntil(
-    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
+    (async () => {
+      if (isExternal && self.clients.openWindow) {
+        return self.clients.openWindow(rawUrl);
+      }
+      const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
       for (const client of clients) {
         if ('focus' in client) {
           return client.focus();
         }
       }
       if (self.clients.openWindow) {
-        return self.clients.openWindow(targetUrl);
+        return self.clients.openWindow('/');
       }
-    })
+    })()
   );
 });

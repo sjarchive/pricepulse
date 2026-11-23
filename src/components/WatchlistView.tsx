@@ -21,6 +21,7 @@ interface WatchlistViewProps {
   products: TrackedProduct[];
   selectedProductId: string | null;
   checkingId: string | null;
+  nowMs: number;
   onSelectProduct: (product: TrackedProduct) => void;
   onCheckNow: (product: TrackedProduct) => void;
   onDeleteProduct: (product: TrackedProduct) => void;
@@ -33,6 +34,7 @@ export function WatchlistView({
   products,
   selectedProductId,
   checkingId,
+  nowMs,
   onSelectProduct,
   onCheckNow,
   onDeleteProduct,
@@ -58,10 +60,10 @@ export function WatchlistView({
       activeDrops,
       targetHits,
       nextCheckLabel: earliestNext
-        ? formatCountdown(new Date(earliestNext).toISOString())
+        ? formatCountdown(new Date(earliestNext).toISOString(), nowMs)
         : 'None scheduled',
     };
-  }, [products]);
+  }, [products, nowMs]);
 
   const filteredProducts = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -258,7 +260,7 @@ export function WatchlistView({
                         <p className="text-xs text-slate-500 mt-1 flex items-center gap-1.5 flex-wrap">
                           <span className="font-medium text-slate-600">{product.platformLabel}</span>
                           <span aria-hidden="true">·</span>
-                          <span>Checked {formatRelativeTime(product.lastCheckedAt)}</span>
+                          <span>Checked {formatRelativeTime(product.lastCheckedAt, nowMs)}</span>
                           {hitTarget && (
                             <>
                               <span aria-hidden="true">·</span>
@@ -409,7 +411,7 @@ export function WatchlistView({
                               <p className="text-xs text-slate-500 mt-0.5 flex items-center gap-1.5 flex-wrap">
                                 <span className="font-medium text-slate-600">{product.platformLabel}</span>
                                 <span aria-hidden="true">·</span>
-                                <span>Checked {formatRelativeTime(product.lastCheckedAt)}</span>
+                                <span>Checked {formatRelativeTime(product.lastCheckedAt, nowMs)}</span>
                                 {hitTarget && (
                                   <>
                                     <span aria-hidden="true">·</span>
@@ -461,7 +463,7 @@ export function WatchlistView({
                             Every {product.checkIntervalHours}h
                           </p>
                           <p className="text-xs text-slate-500 mt-0.5">
-                            {formatCountdown(product.nextCheckAt)}
+                            {formatCountdown(product.nextCheckAt, nowMs)}
                           </p>
                         </td>
 

@@ -2,13 +2,18 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { Bell, Mail, Send } from 'lucide-react';
 import { showBrowserPushNotification } from '../api/client';
 import { isValidEmail, isValidTelegramChatId } from '../lib/priceUtils';
-import type { AlertSettings, ServerCapabilities, TriggerMode } from '../types/tracker';
+import type {
+  AlertLogEntry,
+  AlertSettings,
+  ServerCapabilities,
+  TriggerMode,
+} from '../types/tracker';
 
 interface AlertSetupViewProps {
   settings: AlertSettings;
   capabilities: ServerCapabilities;
   onSaveSettings: (next: AlertSettings) => Promise<void>;
-  onSendTest: (channel?: 'email' | 'telegram' | 'push') => Promise<void>;
+  onSendTest: (channel?: 'email' | 'telegram' | 'push') => Promise<AlertLogEntry>;
 }
 
 export function AlertSetupView({
@@ -44,47 +49,80 @@ export function AlertSetupView({
     setPushEnabled(settings.push.enabled);
   }, [settings]);
 
-  async function handleSave(e: FormEvent) {
-    e.preventDefault();
-    setFeedback(null);
-
-    if (emailEnabled && !isValidEmail(emailAddress)) {
-      setFeedback({ type: 'err', text: 'Enter a valid email address to receive Email alerts.' });
-      return;
+  function validateAndBuildDraft(): { valid: true; next: AlertSettings } | { valid: false; error: string } {
+    const cleanEmail = emailAddress.trim();
+    if (emailEnabled && !isValidEmail(cleanEmail)) {
+      return { valid: false, error: 'Enter a valid email address to enable Email alerts.' };
+    }
+    if (!emailEnabled && cleanEmail && !isValidEmail(cleanEmail)) {
+      return { valid: false, error: 'Enter a valid email address.' };
     }
 
-    if (telegramChatId.trim() && !isValidTelegramChatId(telegramChatId)) {
-      setFeedback({
-        type: 'err',
-        text: 'Telegram Chat ID should be a numeric ID (5 to 20 digits, e.g. 123456789).',
-      });
-      return;
+    const cleanChatId = telegramChatId.trim();
+    if (telegramEnabled && !isValidTelegramChatId(cleanChatId)) {
+      return {
+        valid: false,
+        error: 'Enter a valid numeric Telegram Chat ID (5 to 20 digits) to enable Telegram alerts.',
+      };
+    }
+    if (!telegramEnabled && cleanChatId && !isValidTelegramChatId(cleanChatId)) {
+      return {
+        valid: false,
+        error: 'Telegram Chat ID should be a numeric ID (5 to 20 digits, e.g. 123456789).',
+      };
     }
 
     const parsedPct = Number(minDropPercent);
     if (!Number.isFinite(parsedPct) || parsedPct < 1 || parsedPct > 95) {
-      setFeedback({ type: 'err', text: 'Minimum drop percentage must be between 1% and 95%.' });
-      return;
+      return { valid: false, error: 'Minimum drop percentage must be between 1% and 95%.' };
     }
 
-    setSaving(true);
-    try {
-      await onSaveSettings({
+    return {
+      valid: true,
+      next: {
         ...settings,
         triggerMode,
         minDropPercent: Math.round(parsedPct),
         email: {
           enabled: emailEnabled,
-          address: emailAddress.trim(),
+          address: cleanEmail,
         },
         telegram: {
           enabled: telegramEnabled,
-          chatId: telegramChatId.trim(),
+          chatId: cleanChatId,
         },
         push: {
           enabled: pushEnabled,
         },
-      });
+      },
+    };
+  }
+
+  function isDraftDirty(draft: AlertSettings): boolean {
+    return (
+      draft.triggerMode !== settings.triggerMode ||
+      draft.minDropPercent !== settings.minDropPercent ||
+      draft.email.enabled !== settings.email.enabled ||
+      draft.email.address !== settings.email.address ||
+      draft.telegram.enabled !== settings.telegram.enabled ||
+      draft.telegram.chatId !== settings.telegram.chatId ||
+      draft.push.enabled !== settings.push.enabled
+    );
+  }
+
+  async function handleSave(e: FormEvent) {
+    e.preventDefault();
+    setFeedback(null);
+
+    const validated = validateAndBuildDraft();
+    if (!validated.valid) {
+      setFeedback({ type: 'err', text: validated.error });
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await onSaveSettings(validated.next);
       setFeedback({ type: 'ok', text: 'Alert channel settings saved.' });
     } catch (err) {
       setFeedback({
@@ -121,21 +159,52 @@ export function AlertSetupView({
 
   async function handleTest(channel?: 'email' | 'telegram' | 'push') {
     setFeedback(null);
+    const validated = validateAndBuildDraft();
+    if (!validated.valid) {
+      setFeedback({ type: 'err', text: validated.error });
+      return;
+    }
+
     setTestingChannel(channel || 'all');
     try {
-      await onSendTest(channel);
-      if (!channel || channel === 'push') {
+      // Auto-save unsaved edits so the test always runs against what the user currently entered
+      if (isDraftDirty(validated.next)) {
+        await onSaveSettings(validated.next);
+      }
+
+      const alert = await onSendTest(channel);
+      const targeted = channel
+        ? alert.deliveries.filter((d) => d.channel === channel)
+        : alert.deliveries;
+      const failed = targeted.find((d) => d.status === 'failed');
+      const sentOrLogged = targeted.filter((d) => d.status === 'sent' || d.status === 'logged');
+
+      if ((!channel || channel === 'push') && validated.next.push.enabled) {
         await showBrowserPushNotification(
           'PricePulse Test Alert',
           'Instant browser push notifications are active.'
         );
       }
-      setFeedback({
-        type: 'ok',
-        text: channel
-          ? `Test ${channel} alert dispatched — check Drop Alerts for the delivery log.`
-          : 'Test notification dispatched across enabled channels.',
-      });
+
+      if (failed) {
+        setFeedback({ type: 'err', text: failed.detail });
+      } else if (sentOrLogged.length === 0) {
+        setFeedback({
+          type: 'err',
+          text: channel
+            ? `Enable ${channel} alerts first before sending a test.`
+            : 'All alert channels are currently turned off. Enable at least one channel to test.',
+        });
+      } else if (channel && sentOrLogged[0].status === 'logged') {
+        setFeedback({ type: 'ok', text: sentOrLogged[0].detail });
+      } else {
+        setFeedback({
+          type: 'ok',
+          text: channel
+            ? `Test ${channel} alert dispatched — check Drop Alerts for the delivery log.`
+            : 'Test notification dispatched across enabled channels.',
+        });
+      }
     } catch (err) {
       setFeedback({
         type: 'err',

@@ -9,6 +9,7 @@ import type { AlertLogEntry, ChannelDeliveryResult } from '../types/tracker';
 
 interface AlertsHistoryViewProps {
   alerts: AlertLogEntry[];
+  nowMs: number;
   onGoToSetup: () => void;
   onDeleteAlert: (alert: AlertLogEntry) => Promise<void>;
   onClearAlerts: () => Promise<void>;
@@ -31,6 +32,7 @@ function deliveryStatusText(d: ChannelDeliveryResult): { label: string; classNam
 
 export function AlertsHistoryView({
   alerts,
+  nowMs,
   onGoToSetup,
   onDeleteAlert,
   onClearAlerts,
@@ -186,7 +188,7 @@ export function AlertsHistoryView({
                       <span>{entry.platformLabel}</span>
                       {' · '}
                       <span className="font-mono tabular-nums">
-                        {formatRelativeTime(entry.triggeredAt)}
+                        {formatRelativeTime(entry.triggeredAt, nowMs)}
                       </span>
                     </p>
                     <h3 className="text-sm font-semibold text-slate-900 mt-1 break-words">
