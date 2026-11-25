@@ -75,33 +75,13 @@
   }
 }
 
-/* Copyable data (product titles in detail view, prices, alert messages, setup tokens, errors):
-   selectable with a mouse/trackpad on desktop, but non-selectable on touch tap. */
+/* Copyable data (product titles in detail/schedule views, prices, alert messages, setup tokens, errors):
+   consistently selectable on both desktop and touch devices. */
 .selectable-text,
 [role="alert"] {
   -webkit-user-select: text;
   user-select: text;
-}
-
-@media (hover: none), (pointer: coarse) {
-  html,
-  body,
-  .selectable-text,
-  .select-text,
-  [role="alert"] {
-    -webkit-user-select: none !important;
-    user-select: none !important;
-    -webkit-touch-callout: none !important;
-    -webkit-tap-highlight-color: transparent !important;
-  }
-
-  input,
-  textarea,
-  [contenteditable="true"] {
-    -webkit-user-select: text !important;
-    user-select: text !important;
-    -webkit-touch-callout: default !important;
-  }
+  -webkit-touch-callout: default;
 }
 
 .tabular-nums {
