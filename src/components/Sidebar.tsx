@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { Bell, Clock, ListFilter, LogOut, Sliders, X } from 'lucide-react';
 import type { AlertSettings } from '../types/tracker';
 
@@ -37,6 +38,15 @@ export function Sidebar({
     { id: 'setup', label: 'Alert Setup', icon: Sliders },
     { id: 'schedule', label: 'Check Schedule', icon: Clock, meta: `${settings.defaultCheckIntervalHours}h` },
   ];
+
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onCloseMobile();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [mobileOpen, onCloseMobile]);
 
   const activeChannels = [
     settings.email.enabled ? 'Email' : null,
@@ -82,12 +92,13 @@ export function Sidebar({
             <button
               key={item.id}
               type="button"
+              data-no-press
               onClick={() => {
                 onSelectSection(item.id);
                 onCloseMobile();
               }}
               aria-current={isActive ? 'page' : undefined}
-              className={`w-full flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap ${
+              className={`w-full flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg text-sm font-medium whitespace-nowrap ${
                 isActive
                   ? 'bg-slate-100 text-slate-900'
                   : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
@@ -95,7 +106,7 @@ export function Sidebar({
             >
               <span className="flex items-center gap-2.5 min-w-0">
                 <Icon
-                  className={`w-4 h-4 shrink-0 ${isActive ? 'text-blue-700' : 'text-slate-400'}`}
+                  className={`w-4 h-4 shrink-0 transition-colors ${isActive ? 'text-blue-700' : 'text-slate-400'}`}
                 />
                 <span className="truncate">{item.label}</span>
               </span>
@@ -147,16 +158,26 @@ export function Sidebar({
     <>
       <aside className="hidden lg:block w-64 shrink-0 h-screen sticky top-0">{content}</aside>
 
-      {mobileOpen && (
-        <div className="fixed inset-0 z-50 lg:hidden flex">
-          <div
-            className="fixed inset-0 bg-slate-900/40"
-            onClick={onCloseMobile}
-            aria-hidden="true"
-          />
-          <aside className="relative w-72 max-w-[85vw] h-full z-10">{content}</aside>
-        </div>
-      )}
+      <div
+        className={`fixed inset-0 z-50 lg:hidden flex ${
+          mobileOpen ? 'pointer-events-auto' : 'pointer-events-none'
+        }`}
+        aria-hidden={!mobileOpen}
+        inert={!mobileOpen}
+      >
+        <div
+          data-open={mobileOpen ? 'true' : 'false'}
+          className="fixed inset-0 bg-slate-900/40 backdrop-blur-[1px] pp-drawer-backdrop"
+          onClick={onCloseMobile}
+          aria-hidden="true"
+        />
+        <aside
+          data-open={mobileOpen ? 'true' : 'false'}
+          className="relative w-72 max-w-[85vw] h-full z-10 shadow-xl pp-drawer-panel"
+        >
+          {content}
+        </aside>
+      </div>
     </>
   );
 }

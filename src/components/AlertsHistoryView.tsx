@@ -111,7 +111,7 @@ export function AlertsHistoryView({
 
           {alerts.length > 0 && (
             confirmClearAll ? (
-              <div className="inline-flex items-center gap-1.5 self-end sm:self-auto shrink-0">
+              <div className="inline-flex items-center gap-1.5 self-end sm:self-auto shrink-0 pp-feedback-enter">
                 <button
                   type="button"
                   onClick={handleConfirmClearAll}
@@ -146,7 +146,7 @@ export function AlertsHistoryView({
       {errorMsg && (
         <p
           role="alert"
-          className="text-sm rounded-lg px-4 py-3 border bg-red-50 border-red-200 text-red-700"
+          className="text-sm rounded-lg px-4 py-3 border bg-red-50 border-red-200 text-red-700 pp-feedback-enter"
         >
           {errorMsg}
         </p>
@@ -177,7 +177,7 @@ export function AlertsHistoryView({
             const safeHref = sanitizeExternalUrl(entry.productUrl);
             const isDeleting = deletingId === entry.id;
             return (
-              <article key={entry.id} data-testid="alert-log-item" className="p-4 sm:p-5 space-y-3">
+              <article key={entry.id} data-testid="alert-log-item" className="p-4 sm:p-5 space-y-3 transition-colors hover:bg-slate-50/60">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <p className="text-xs text-slate-500">

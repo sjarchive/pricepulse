@@ -131,7 +131,7 @@ export function ScheduleView({
       {feedback && (
         <p
           role={feedback.type === 'err' ? 'alert' : 'status'}
-          className={`text-sm rounded-lg px-4 py-3 border ${
+          className={`text-sm rounded-lg px-4 py-3 border pp-feedback-enter ${
             feedback.type === 'err'
               ? 'bg-red-50 border-red-200 text-red-700'
               : 'bg-emerald-50 border-emerald-200 text-emerald-800'
@@ -317,7 +317,7 @@ export function ScheduleView({
                 </thead>
                 <tbody className="divide-y divide-slate-200 text-sm">
                   {products.map((product) => (
-                    <tr key={product.id} className="hover:bg-slate-50/70">
+                    <tr key={product.id} className="transition-colors hover:bg-slate-50/70">
                       <td className="py-3 pl-5 pr-4 max-w-xs">
                         <p className="font-medium text-slate-900 truncate selectable-text">{product.title}</p>
                       </td>

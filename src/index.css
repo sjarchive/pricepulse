@@ -4,6 +4,16 @@
   --font-display: "Outfit", ui-sans-serif, system-ui, sans-serif;
   --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --default-transition-duration: 160ms;
+  --default-transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+:root {
+  --ease-smooth: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --duration-fast: 160ms;
+  --duration-normal: 240ms;
+  --duration-slow: 300ms;
 }
 
 @layer base {
@@ -34,6 +44,8 @@
     -webkit-touch-callout: default;
   }
 
+
+
   /* Show pointer cursor and prevent accidental selection / tap flash on interactive controls.
      Tailwind v4 preflight dropped `cursor: pointer` from buttons, so restore it globally. */
   a,
@@ -61,6 +73,11 @@
     touch-action: manipulation;
   }
 
+  /* Crisp tactile press feedback on compact action buttons, icon buttons, and tabs */
+  button:not(:disabled):not([data-no-press]):active {
+    transform: scale(0.985);
+  }
+
   img,
   svg {
     -webkit-user-select: none;
@@ -75,6 +92,26 @@
   }
 }
 
+
+/* Unified smooth state transitions across all interactive controls and form fields */
+a,
+button,
+[role="button"],
+[role="tab"],
+[role="menuitem"],
+[role="option"],
+[role="checkbox"],
+[role="switch"],
+[role="link"],
+select,
+summary,
+input,
+textarea {
+  transition-property: color, background-color, border-color, box-shadow, opacity, transform;
+  transition-duration: var(--duration-fast);
+  transition-timing-function: var(--ease-standard);
+}
+
 /* Copyable data (product titles in detail/schedule views, prices, alert messages, setup tokens, errors):
    consistently selectable on both desktop and touch devices. */
 .selectable-text,
@@ -82,6 +119,112 @@
   -webkit-user-select: text;
   user-select: text;
   -webkit-touch-callout: default;
+}
+
+/* Unified GPU-composited motion primitives */
+@keyframes ppViewEnter {
+  from {
+    opacity: 0.35;
+    transform: translate3d(0, 4px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes ppPanelEnter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, -4px, 0) scale(0.995);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes ppFeedbackEnter {
+  from {
+    opacity: 0;
+    transform: translate3d(0, -4px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.pp-view-enter {
+  animation: ppViewEnter var(--duration-normal) var(--ease-smooth) both;
+}
+
+.pp-panel-enter {
+  animation: ppPanelEnter var(--duration-normal) var(--ease-smooth) both;
+}
+
+.pp-feedback-enter {
+  animation: ppFeedbackEnter var(--duration-fast) var(--ease-smooth) both;
+}
+
+/* Smooth height + opacity + translate collapse for panels and conditional fields */
+.pp-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transform: translate3d(0, -6px, 0);
+  pointer-events: none;
+  transition:
+    grid-template-rows var(--duration-slow) var(--ease-smooth),
+    opacity var(--duration-normal) var(--ease-smooth),
+    transform var(--duration-slow) var(--ease-smooth);
+}
+
+.pp-collapse[data-open="true"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transform: translate3d(0, 0, 0);
+  pointer-events: auto;
+}
+
+.pp-collapse-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* Mobile navigation drawer backdrop + slide panel */
+.pp-drawer-backdrop {
+  opacity: 0;
+  transition: opacity var(--duration-slow) var(--ease-smooth);
+}
+
+.pp-drawer-backdrop[data-open="true"] {
+  opacity: 1;
+}
+
+.pp-drawer-panel {
+  transform: translate3d(-100%, 0, 0);
+  transition: transform var(--duration-slow) var(--ease-smooth);
+  will-change: transform;
+}
+
+.pp-drawer-panel[data-open="true"] {
+  transform: translate3d(0, 0, 0);
+}
+
+/* Floating alert toast slide-up + fade entrance/exit */
+.pp-toast {
+  opacity: 0;
+  transform: translate3d(0, 14px, 0) scale(0.985);
+  transition:
+    opacity var(--duration-normal) var(--ease-smooth),
+    transform var(--duration-normal) var(--ease-smooth);
+  will-change: opacity, transform;
+}
+
+.pp-toast[data-visible="true"] {
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
 }
 
 .tabular-nums {
@@ -97,4 +240,36 @@
   outline: none !important;
   -webkit-tap-highlight-color: transparent;
   user-select: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pp-view-enter,
+  .pp-panel-enter,
+  .pp-feedback-enter {
+    animation-duration: 0.01ms !important;
+  }
+
+  .pp-collapse,
+  .pp-drawer-backdrop,
+  .pp-drawer-panel,
+  .pp-toast,
+  a,
+  button,
+  [role="button"],
+  [role="tab"],
+  [role="menuitem"],
+  [role="option"],
+  [role="checkbox"],
+  [role="switch"],
+  [role="link"],
+  select,
+  summary,
+  input,
+  textarea {
+    transition-duration: 0.01ms !important;
+  }
+
+  button:not(:disabled):not([data-no-press]):active {
+    transform: none !important;
+  }
 }

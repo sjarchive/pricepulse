@@ -201,7 +201,7 @@ export function WatchlistView({
         </div>
 
         {filteredProducts.length === 0 ? (
-          <div className="px-6 py-14 text-center">
+          <div className="px-6 py-14 text-center pp-feedback-enter">
             <p className="font-display text-base font-semibold text-slate-900">
               No tracked products match your filter
             </p>
@@ -243,6 +243,7 @@ export function WatchlistView({
                   >
                     <button
                       type="button"
+                      data-no-press
                       onClick={() => onSelectProduct(product)}
                       aria-label={`Inspect ${product.title}`}
                       className="w-full flex items-center gap-3 text-left group cursor-pointer"
@@ -394,6 +395,7 @@ export function WatchlistView({
                         <td className="py-3.5 pl-5 pr-4 min-w-[260px] max-w-[440px]">
                           <button
                             type="button"
+                            data-no-press
                             onClick={() => onSelectProduct(product)}
                             aria-label={`Inspect ${product.title}`}
                             className="w-full flex items-center gap-3.5 text-left group cursor-pointer"

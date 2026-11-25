@@ -165,7 +165,7 @@ export function TrackProductBar({
         <button
           type="submit"
           disabled={loadingPreview}
-          className="h-11 px-5 bg-blue-700 hover:bg-blue-800 disabled:opacity-60 text-white text-sm font-medium rounded-lg inline-flex items-center justify-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          className="group h-11 px-5 bg-blue-700 hover:bg-blue-800 disabled:opacity-60 text-white text-sm font-medium rounded-lg inline-flex items-center justify-center gap-2 whitespace-nowrap shrink-0 cursor-pointer"
         >
           {loadingPreview ? (
             <>
@@ -175,21 +175,21 @@ export function TrackProductBar({
           ) : (
             <>
               Fetch Product
-              <ArrowRight className="w-4 h-4" />
+              <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5" />
             </>
           )}
         </button>
       </form>
 
       {detectedStore && !preview && !errorMsg && (
-        <p className="mt-2.5 text-xs text-slate-500">
+        <p className="mt-2.5 text-xs text-slate-500 pp-feedback-enter">
           Detected platform: <span className="font-medium text-slate-700">{detectedStore.platformLabel}</span>
           {' · '}Default currency: <span className="font-mono">{detectedStore.currency}</span>
         </p>
       )}
 
       {errorMsg && (
-        <p role="alert" className="mt-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3.5 py-2.5">
+        <p role="alert" className="mt-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3.5 py-2.5 pp-feedback-enter">
           {errorMsg}
         </p>
       )}
@@ -197,7 +197,7 @@ export function TrackProductBar({
       {preview && (
         <form
           onSubmit={handleConfirmTrack}
-          className="mt-5 pt-5 border-t border-slate-200 space-y-4"
+          className="mt-5 pt-5 border-t border-slate-200 space-y-4 pp-panel-enter"
         >
           <div className="flex items-start justify-between gap-4">
             <div className="flex items-start gap-3.5 min-w-0">

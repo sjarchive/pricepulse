@@ -29,6 +29,7 @@ import { Sidebar, type NavSection } from './components/Sidebar';
 import { TrackProductBar } from './components/TrackProductBar';
 import { WatchlistView } from './components/WatchlistView';
 import { consumeInitialAppState, type InitialAppState } from './lib/initialState';
+import { MOTION_DURATION_MS } from './lib/motion';
 import type {
   AlertLogEntry,
   AlertSettings,
@@ -114,6 +115,8 @@ export default function App() {
 
   const trackInputRef = useRef<HTMLInputElement | null>(null);
   const notifiedAlertIdsRef = useRef<Set<string>>(new Set());
+  const hasNavigatedRef = useRef(false);
+  const [renderedDetailProduct, setRenderedDetailProduct] = useState<TrackedProduct | null>(null);
 
   const notifyAlert = useCallback((alert: AlertLogEntry, showOsPush: boolean = true) => {
     if (notifiedAlertIdsRef.current.has(alert.id)) return;
@@ -459,6 +462,24 @@ export default function App() {
 
   const selectedProduct = products.find((p) => p.id === selectedProductId) || null;
 
+  useEffect(() => {
+    if (selectedProduct) {
+      setRenderedDetailProduct(selectedProduct);
+      return;
+    }
+    const timer = setTimeout(() => {
+      setRenderedDetailProduct(null);
+    }, MOTION_DURATION_MS.slow);
+    return () => clearTimeout(timer);
+  }, [selectedProduct]);
+
+  function handleSelectSection(next: NavSection) {
+    if (next !== activeSection) {
+      hasNavigatedRef.current = true;
+      setActiveSection(next);
+    }
+  }
+
   if (authChecking) {
     return (
       <div
@@ -483,7 +504,7 @@ export default function App() {
     <div className="min-h-screen flex bg-[#F8FAFC] text-[#0F172A]">
       <Sidebar
         activeSection={activeSection}
-        onSelectSection={(sec) => setActiveSection(sec)}
+        onSelectSection={handleSelectSection}
         productCount={products.length}
         alertCount={alerts.length}
         settings={settings}
@@ -543,7 +564,7 @@ export default function App() {
               {actionError && (
                 <div
                   role="alert"
-                  className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm flex items-center justify-between gap-3"
+                  className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm flex items-center justify-between gap-3 pp-feedback-enter"
                 >
                   <span>{actionError}</span>
                   <button
@@ -557,80 +578,98 @@ export default function App() {
                 </div>
               )}
 
-              {activeSection === 'watchlist' && (
-                <>
-                  <TrackProductBar
-                    defaultIntervalHours={settings.defaultCheckIntervalHours}
-                    inputRef={trackInputRef}
-                    onProductAdded={handleProductAdded}
-                  />
+              <div
+                key={activeSection}
+                className={hasNavigatedRef.current ? 'space-y-6 pp-view-enter' : 'space-y-6'}
+              >
+                {activeSection === 'watchlist' && (
+                  <>
+                    <div>
+                      <TrackProductBar
+                        defaultIntervalHours={settings.defaultCheckIntervalHours}
+                        inputRef={trackInputRef}
+                        onProductAdded={handleProductAdded}
+                      />
 
-                  {selectedProduct && (
-                    <ProductDetailPanel
-                      product={selectedProduct}
-                      checking={checkingId === selectedProduct.id}
+                      <div
+                        className="pp-collapse"
+                        data-open={selectedProduct ? 'true' : 'false'}
+                        aria-hidden={!selectedProduct}
+                        inert={!selectedProduct}
+                      >
+                        <div className="pp-collapse-inner">
+                          {renderedDetailProduct && (
+                            <div className="pt-6">
+                              <ProductDetailPanel
+                                product={renderedDetailProduct}
+                                checking={checkingId === renderedDetailProduct.id}
+                                nowMs={nowMs}
+                                onClose={() => setSelectedProductId(null)}
+                                onCheckNow={handleCheckNow}
+                                onUpdateProduct={handleUpdateProduct}
+                                onRecordPrice={handleRecordPrice}
+                              />
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    <WatchlistView
+                      products={products}
+                      selectedProductId={selectedProductId}
+                      checkingId={checkingId}
                       nowMs={nowMs}
-                      onClose={() => setSelectedProductId(null)}
-                      onCheckNow={handleCheckNow}
-                      onUpdateProduct={handleUpdateProduct}
-                      onRecordPrice={handleRecordPrice}
+                      onSelectProduct={(p) =>
+                        setSelectedProductId((curr) => (curr === p.id ? null : p.id))
+                      }
+                      onCheckNow={(p) => {
+                        handleCheckNow(p).catch(() => undefined);
+                      }}
+                      onDeleteProduct={handleDeleteProduct}
+                      onFocusTrackInput={focusTrackProductBar}
                     />
-                  )}
+                  </>
+                )}
 
-                  <WatchlistView
-                    products={products}
-                    selectedProductId={selectedProductId}
-                    checkingId={checkingId}
+                {activeSection === 'alerts' && (
+                  <AlertsHistoryView
+                    alerts={alerts}
                     nowMs={nowMs}
-                    onSelectProduct={(p) =>
-                      setSelectedProductId((curr) => (curr === p.id ? null : p.id))
-                    }
-                    onCheckNow={(p) => {
-                      handleCheckNow(p).catch(() => undefined);
-                    }}
-                    onDeleteProduct={handleDeleteProduct}
-                    onFocusTrackInput={focusTrackProductBar}
+                    onGoToSetup={() => handleSelectSection('setup')}
+                    onDeleteAlert={handleDeleteAlert}
+                    onClearAlerts={handleClearAlerts}
                   />
-                </>
-              )}
+                )}
 
-              {activeSection === 'alerts' && (
-                <AlertsHistoryView
-                  alerts={alerts}
-                  nowMs={nowMs}
-                  onGoToSetup={() => setActiveSection('setup')}
-                  onDeleteAlert={handleDeleteAlert}
-                  onClearAlerts={handleClearAlerts}
-                />
-              )}
+                {activeSection === 'setup' && (
+                  <AlertSetupView
+                    settings={settings}
+                    capabilities={capabilities}
+                    onSaveSettings={(next) => handleSaveSettings(next, false)}
+                    onSendTest={handleSendTest}
+                  />
+                )}
 
-              {activeSection === 'setup' && (
-                <AlertSetupView
-                  settings={settings}
-                  capabilities={capabilities}
-                  onSaveSettings={(next) => handleSaveSettings(next, false)}
-                  onSendTest={handleSendTest}
-                />
-              )}
-
-              {activeSection === 'schedule' && (
-                <ScheduleView
-                  settings={settings}
-                  products={products}
-                  runningCycle={runningCycle}
-                  nowMs={nowMs}
-                  onSaveDefaultInterval={(hours, applyToAll) =>
-                    handleSaveSettings(
-                      { ...settings, defaultCheckIntervalHours: hours },
-                      applyToAll
-                    )
-                  }
-                  onUpdateProductInterval={(id, hours) =>
-                    handleUpdateProduct(id, { checkIntervalHours: hours })
-                  }
-                  onRunCycleNow={handleRunScheduleCycle}
-                />
-              )}
+                {activeSection === 'schedule' && (
+                  <ScheduleView
+                    settings={settings}
+                    products={products}
+                    runningCycle={runningCycle}
+                    nowMs={nowMs}
+                    onSaveDefaultInterval={(hours, applyToAll) =>
+                      handleSaveSettings(
+                        { ...settings, defaultCheckIntervalHours: hours },
+                        applyToAll
+                      )
+                    }
+                    onUpdateProductInterval={(id, hours) =>
+                      handleUpdateProduct(id, { checkIntervalHours: hours })
+                    }
+                    onRunCycleNow={handleRunScheduleCycle}
+                  />
+                )}
+              </div>
             </>
           )}
         </main>
@@ -641,7 +680,7 @@ export default function App() {
         onDismiss={() => setLiveToastAlert(null)}
         onViewAlerts={() => {
           setLiveToastAlert(null);
-          setActiveSection('alerts');
+          handleSelectSection('alerts');
         }}
       />
     </div>

@@ -249,7 +249,7 @@ export function AlertSetupView({
       {feedback && (
         <p
           role={feedback.type === 'err' ? 'alert' : 'status'}
-          className={`text-sm rounded-lg px-4 py-3 border ${
+          className={`text-sm rounded-lg px-4 py-3 border pp-feedback-enter ${
             feedback.type === 'err'
               ? 'bg-red-50 border-red-200 text-red-700'
               : 'bg-emerald-50 border-emerald-200 text-emerald-800'
@@ -270,6 +270,7 @@ export function AlertSetupView({
           </p>
         </div>
 
+        <div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           {(
             [
@@ -295,10 +296,11 @@ export function AlertSetupView({
               <button
                 key={opt.id}
                 type="button"
+                data-no-press
                 onClick={() => setTriggerMode(opt.id)}
-                className={`text-left p-4 rounded-lg border transition-colors cursor-pointer ${
+                className={`text-left p-4 rounded-lg border cursor-pointer ${
                   active
-                    ? 'border-blue-600 bg-blue-50/40'
+                    ? 'border-blue-600 bg-blue-50/40 shadow-xs'
                     : 'border-slate-200 hover:border-slate-300 bg-white'
                 }`}
               >
@@ -309,22 +311,30 @@ export function AlertSetupView({
           })}
         </div>
 
-        {triggerMode === 'percent_drop' && (
-          <div className="pt-2 flex flex-wrap items-center gap-3">
-            <label htmlFor="min-drop-pct" className="text-xs font-medium text-slate-700">
-              Minimum Drop Threshold (%)
-            </label>
-            <input
-              id="min-drop-pct"
-              type="number"
-              min="1"
-              max="95"
-              value={minDropPercent}
-              onChange={(e) => setMinDropPercent(e.target.value)}
-              className="w-20 h-9 px-3 text-sm font-mono tabular-nums text-slate-900 bg-white border border-slate-300 rounded-lg focus:outline-none focus:border-blue-600"
-            />
+        <div
+          className="pp-collapse"
+          data-open={triggerMode === 'percent_drop' ? 'true' : 'false'}
+          aria-hidden={triggerMode !== 'percent_drop'}
+          inert={triggerMode !== 'percent_drop'}
+        >
+          <div className="pp-collapse-inner">
+            <div className="pt-4 flex flex-wrap items-center gap-3">
+              <label htmlFor="min-drop-pct" className="text-xs font-medium text-slate-700">
+                Minimum Drop Threshold (%)
+              </label>
+              <input
+                id="min-drop-pct"
+                type="number"
+                min="1"
+                max="95"
+                value={minDropPercent}
+                onChange={(e) => setMinDropPercent(e.target.value)}
+                className="w-20 h-9 px-3 text-sm font-mono tabular-nums text-slate-900 bg-white border border-slate-300 rounded-lg focus:outline-none focus:border-blue-600"
+              />
+            </div>
           </div>
-        )}
+        </div>
+        </div>
       </section>
 
       {/* Three Notification Channels */}

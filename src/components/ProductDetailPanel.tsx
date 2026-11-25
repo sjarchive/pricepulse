@@ -18,6 +18,7 @@ import {
   sanitizeExternalUrl,
   validateCheckInterval,
 } from '../lib/priceUtils';
+import { MOTION_DURATION_MS } from '../lib/motion';
 import type { AlertLogEntry, TrackedProduct } from '../types/tracker';
 import { ProductThumbnail } from './ProductThumbnail';
 
@@ -359,7 +360,8 @@ export function ProductDetailPanel({
                 stroke="#1D4ED8"
                 strokeWidth={2}
                 fill="url(#priceFill)"
-                animationDuration={220}
+                animationDuration={MOTION_DURATION_MS.chart}
+                animationEasing="ease-out"
                 dot={chartData.length <= 2 ? { r: 3.5, fill: '#1D4ED8', strokeWidth: 0 } : false}
                 activeDot={{ r: 4, fill: '#1D4ED8' }}
               />
@@ -374,7 +376,7 @@ export function ProductDetailPanel({
       {feedback && (
         <p
           role={feedback.type === 'err' ? 'alert' : 'status'}
-          className={`text-sm rounded-lg px-3.5 py-2.5 border ${
+          className={`text-sm rounded-lg px-3.5 py-2.5 border pp-feedback-enter ${
             feedback.type === 'err'
               ? 'bg-red-50 border-red-200 text-red-700'
               : 'bg-emerald-50 border-emerald-200 text-emerald-800'

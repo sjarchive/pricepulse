@@ -96,7 +96,7 @@ export function LoginWall({ configured, initialNotice, onAuthenticated }: LoginW
           {error && (
             <p
               role="alert"
-              className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3.5 py-2.5 leading-snug"
+              className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3.5 py-2.5 leading-snug pp-feedback-enter"
             >
               {error}
             </p>
