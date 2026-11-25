@@ -1,11 +1,16 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { Eye, EyeOff, Lock, ShieldCheck } from 'lucide-react';
 import { loginWithCredentials, setupInitialAccount } from '../api/client';
+import type { BootstrapResponse } from '../types/tracker';
 
 interface LoginWallProps {
   configured: boolean;
   initialNotice?: string | null;
-  onAuthenticated: (token: string, username: string) => void;
+  onAuthenticated: (
+    token: string,
+    username: string,
+    bootstrap?: BootstrapResponse
+  ) => void | Promise<void>;
 }
 
 export function LoginWall({ configured, initialNotice, onAuthenticated }: LoginWallProps) {
@@ -56,9 +61,9 @@ export function LoginWall({ configured, initialNotice, onAuthenticated }: LoginW
       const result = configured
         ? await loginWithCredentials(trimmedUser, password)
         : await setupInitialAccount(trimmedUser, password);
+      await onAuthenticated(result.token, result.username, result.bootstrap);
       setPassword('');
       setConfirmPassword('');
-      onAuthenticated(result.token, result.username);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to sign in.');
     } finally {

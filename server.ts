@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
@@ -26,7 +27,15 @@ import {
   sanitizeExternalUrl,
   validateCheckInterval,
 } from './src/lib/priceUtils';
-import type { AlertLogEntry, AlertSettings, CurrencyCode, TrackedProduct, TriggerMode } from './src/types/tracker';
+import { injectInitialStateIntoHtml } from './src/lib/initialState';
+import type {
+  AlertLogEntry,
+  AlertSettings,
+  BootstrapResponse,
+  CurrencyCode,
+  TrackedProduct,
+  TriggerMode,
+} from './src/types/tracker';
 import {
   dispatchMultiChannelAlert,
   getServerCapabilities,
@@ -211,6 +220,32 @@ async function startServer() {
     return { claims, hasBearerAuth: Boolean(bearer) };
   }
 
+  function buildBootstrapPayload(): BootstrapResponse {
+    const state = trackerStore.getState();
+    return {
+      products: state.products,
+      settings: state.settings,
+      alerts: state.alerts,
+      capabilities: getServerCapabilities(),
+    };
+  }
+
+  async function buildInitialStateForRequest(req: express.Request) {
+    const configuredUser = resolveConfiguredUsername(
+      getEnvAuthConfig(),
+      trackerStore.getAuthCredentials()
+    );
+    const auth = await authenticateRequest(req);
+    return {
+      auth: {
+        configured: Boolean(configuredUser),
+        authenticated: Boolean(auth),
+        username: auth ? auth.claims.sub : null,
+      },
+      bootstrap: auth ? buildBootstrapPayload() : null,
+    };
+  }
+
   // Auth status endpoint (public — reveals no secrets or watchlist data)
   app.get('/api/auth/status', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -219,10 +254,12 @@ async function startServer() {
       trackerStore.getAuthCredentials()
     );
     const auth = await authenticateRequest(req);
+    const includeBootstrap = req.query.includeBootstrap === '1';
     res.json({
       configured: Boolean(configuredUser),
       authenticated: Boolean(auth),
       username: auth ? auth.claims.sub : null,
+      ...(includeBootstrap ? { bootstrap: auth ? buildBootstrapPayload() : null } : {}),
     });
   });
 
@@ -261,7 +298,7 @@ async function startServer() {
       'Set-Cookie',
       buildSessionCookieHeader(token, { isHttps: isHttpsRequest(req) })
     );
-    res.status(201).json({ token, username });
+    res.status(201).json({ token, username, bootstrap: buildBootstrapPayload() });
   });
 
   // Login endpoint with brute-force rate limiting and constant-time credential verification
@@ -296,7 +333,7 @@ async function startServer() {
       'Set-Cookie',
       buildSessionCookieHeader(token, { isHttps: isHttpsRequest(req) })
     );
-    res.json({ token, username: result.username });
+    res.json({ token, username: result.username, bootstrap: buildBootstrapPayload() });
   });
 
   // Logout endpoint — immediately revokes current session token server-side and clears cookie
@@ -369,13 +406,8 @@ async function startServer() {
 
   // Initial state bootstrap
   app.get('/api/bootstrap', (_req, res) => {
-    const state = trackerStore.getState();
-    res.json({
-      products: state.products,
-      settings: state.settings,
-      alerts: state.alerts,
-      capabilities: getServerCapabilities(),
-    });
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(buildBootstrapPayload());
   });
 
   // Preview product URL (SSRF-validated scrape)
@@ -751,14 +783,42 @@ async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },
-      appType: 'spa',
+      appType: 'custom',
     });
     app.use(vite.middlewares);
+    app.get('*', async (req, res, next) => {
+      try {
+        const indexPath = path.resolve(process.cwd(), 'index.html');
+        const rawHtml = fs.readFileSync(indexPath, 'utf-8');
+        const transformedHtml = await vite.transformIndexHtml(req.originalUrl, rawHtml);
+        const initialState = await buildInitialStateForRequest(req);
+        const injectedHtml = injectInitialStateIntoHtml(transformedHtml, initialState);
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.setHeader('Cache-Control', 'private, no-store, no-cache, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Vary', 'Cookie');
+        res.status(200).send(injectedHtml);
+      } catch (err) {
+        next(err);
+      }
+    });
   } else {
     const distDir = path.resolve(process.cwd(), 'dist');
-    app.use(express.static(distDir));
-    app.get('*', (_req, res) => {
-      res.sendFile(path.join(distDir, 'index.html'));
+    const distIndexHtml = fs.readFileSync(path.join(distDir, 'index.html'), 'utf-8');
+    app.use(express.static(distDir, { index: false }));
+    app.get('*', async (req, res) => {
+      let html = distIndexHtml;
+      try {
+        const initialState = await buildInitialStateForRequest(req);
+        html = injectInitialStateIntoHtml(distIndexHtml, initialState);
+      } catch {
+        // Fallback to unmodified HTML
+      }
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Cache-Control', 'private, no-store, no-cache, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Vary', 'Cookie');
+      res.status(200).send(html);
     });
   }
 

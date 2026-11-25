@@ -23,9 +23,11 @@ import {
   sanitizeExternalUrl,
   validateCheckInterval,
 } from '../src/lib/priceUtils';
+import { injectInitialStateIntoHtml } from '../src/lib/initialState';
 import type {
   AlertLogEntry,
   AlertSettings,
+  BootstrapResponse,
   CurrencyCode,
   TrackedProduct,
   TriggerMode,
@@ -226,6 +228,20 @@ async function executeProductCheckEdge(
   return recordObservedPriceEdge(env, product, preview.price, 'live', preview.note, preview.inStock);
 }
 
+async function buildWorkerBootstrap(env: WorkerEnv): Promise<BootstrapResponse> {
+  const [products, settings, alerts] = await Promise.all([
+    getAllProductsD1(env.DB),
+    getSettingsD1(env.DB),
+    getAlertsD1(env.DB),
+  ]);
+  return {
+    products,
+    settings,
+    alerts,
+    capabilities: getWorkerCapabilities(env),
+  };
+}
+
 const app = new Hono<{ Bindings: WorkerEnv }>();
 
 app.use('/api/*', async (c, next) => {
@@ -266,10 +282,13 @@ app.get('/api/auth/status', async (c) => {
     c.req.header('authorization'),
     c.req.header('cookie')
   );
+  const includeBootstrap = c.req.query('includeBootstrap') === '1';
+  const bootstrap = auth && includeBootstrap ? await buildWorkerBootstrap(c.env) : undefined;
   return c.json({
     configured: Boolean(configuredUser),
     authenticated: Boolean(auth),
     username: auth ? auth.claims.sub : null,
+    ...(includeBootstrap ? { bootstrap: bootstrap ?? null } : {}),
   });
 });
 
@@ -305,7 +324,8 @@ app.post('/api/auth/setup', async (c) => {
       isHttps: isHttpsEdgeRequest(c.req.url, c.req.header('x-forwarded-proto')),
     })
   );
-  return c.json({ token, username }, 201);
+  const bootstrap = await buildWorkerBootstrap(c.env);
+  return c.json({ token, username, bootstrap }, 201);
 });
 
 app.post('/api/auth/login', async (c) => {
@@ -344,7 +364,8 @@ app.post('/api/auth/login', async (c) => {
       isHttps: isHttpsEdgeRequest(c.req.url, c.req.header('x-forwarded-proto')),
     })
   );
-  return c.json({ token, username: result.username });
+  const bootstrap = await buildWorkerBootstrap(c.env);
+  return c.json({ token, username: result.username, bootstrap });
 });
 
 app.post('/api/auth/logout', async (c) => {
@@ -379,17 +400,9 @@ app.post('/api/auth/logout', async (c) => {
 });
 
 app.get('/api/bootstrap', async (c) => {
-  const [products, settings, alerts] = await Promise.all([
-    getAllProductsD1(c.env.DB),
-    getSettingsD1(c.env.DB),
-    getAlertsD1(c.env.DB),
-  ]);
-  return c.json({
-    products,
-    settings,
-    alerts,
-    capabilities: getWorkerCapabilities(c.env),
-  });
+  c.header('Cache-Control', 'no-store');
+  const bootstrap = await buildWorkerBootstrap(c.env);
+  return c.json(bootstrap);
 });
 
 app.get('/api/events', () => {
@@ -754,8 +767,70 @@ app.delete('/api/alerts', async (c) => {
   return c.json({ cleared: true });
 });
 
-app.all('*', (c) => {
-  return c.env.ASSETS.fetch(c.req.raw);
+app.all('*', async (c) => {
+  if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
+    return c.env.ASSETS.fetch(c.req.raw);
+  }
+
+  const reqUrl = new URL(c.req.url);
+  if (
+    reqUrl.pathname.startsWith('/assets/') ||
+    /\.[a-z0-9]{1,8}$/i.test(reqUrl.pathname)
+  ) {
+    return c.env.ASSETS.fetch(c.req.raw);
+  }
+
+  const indexRequest = new Request(new URL('/', reqUrl.origin).toString(), {
+    method: 'GET',
+    headers: { Accept: 'text/html' },
+  });
+  const assetResponse = await c.env.ASSETS.fetch(indexRequest);
+  const contentType = assetResponse.headers.get('content-type') || '';
+
+  if (!assetResponse.ok || !contentType.toLowerCase().includes('text/html')) {
+    return assetResponse;
+  }
+
+  const html = await assetResponse.text();
+  let injectedHtml = html;
+
+  try {
+    await ensureD1Schema(c.env.DB);
+    const dbAuth = await getAuthCredentialsD1(c.env.DB);
+    const configuredUser = resolveConfiguredUsername(getEdgeEnvAuth(c.env), dbAuth);
+    const auth = await authenticateEdgeRequest(
+      c.env,
+      c.req.header('authorization'),
+      c.req.header('cookie')
+    );
+    const bootstrap = auth ? await buildWorkerBootstrap(c.env) : null;
+
+    injectedHtml = injectInitialStateIntoHtml(html, {
+      auth: {
+        configured: Boolean(configuredUser),
+        authenticated: Boolean(auth),
+        username: auth ? auth.claims.sub : null,
+      },
+      bootstrap,
+    });
+  } catch {
+    // Graceful fallback: serve unmodified HTML so the client can retry
+  }
+
+  const headers = new Headers(assetResponse.headers);
+  headers.set('Content-Type', 'text/html; charset=utf-8');
+  headers.set('Cache-Control', 'private, no-store, no-cache, must-revalidate');
+  headers.set('Pragma', 'no-cache');
+  headers.set('Vary', 'Cookie');
+  headers.delete('ETag');
+  headers.delete('Last-Modified');
+  headers.delete('Content-Length');
+  headers.delete('CF-Cache-Status');
+
+  return new Response(c.req.method === 'HEAD' ? null : injectedHtml, {
+    status: 200,
+    headers,
+  });
 });
 
 export default {

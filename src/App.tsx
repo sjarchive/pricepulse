@@ -28,9 +28,11 @@ import { ScheduleView } from './components/ScheduleView';
 import { Sidebar, type NavSection } from './components/Sidebar';
 import { TrackProductBar } from './components/TrackProductBar';
 import { WatchlistView } from './components/WatchlistView';
+import { consumeInitialAppState, type InitialAppState } from './lib/initialState';
 import type {
   AlertLogEntry,
   AlertSettings,
+  BootstrapResponse,
   ServerCapabilities,
   SseAlertEvent,
   TrackedProduct,
@@ -52,25 +54,56 @@ const DEFAULT_SETTINGS: AlertSettings = {
   push: { enabled: true },
 };
 
+const DEFAULT_CAPABILITIES: ServerCapabilities = {
+  emailConfigured: false,
+  telegramBotConfigured: false,
+};
+
+let cachedBootState: InitialAppState | null | undefined = undefined;
+function getBootInitialState(): InitialAppState | null {
+  if (cachedBootState === undefined) {
+    cachedBootState = consumeInitialAppState();
+  }
+  return cachedBootState;
+}
+
 export default function App() {
-  const [authChecking, setAuthChecking] = useState(true);
-  const [authConfigured, setAuthConfigured] = useState(true);
-  const [authUsername, setAuthUsername] = useState<string | null>(null);
+  const bootState = getBootInitialState();
+  const hasHydratedState = Boolean(
+    bootState &&
+      (!bootState.auth.authenticated ||
+        (bootState.auth.username && bootState.bootstrap !== null))
+  );
+
+  const [authChecking, setAuthChecking] = useState(!hasHydratedState);
+  const [authConfigured, setAuthConfigured] = useState(
+    bootState ? bootState.auth.configured : true
+  );
+  const [authUsername, setAuthUsername] = useState<string | null>(
+    hasHydratedState && bootState?.auth.authenticated ? bootState.auth.username : null
+  );
   const [authNotice, setAuthNotice] = useState<string | null>(null);
 
   const [activeSection, setActiveSection] = useState<NavSection>('watchlist');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
-  const [loading, setLoading] = useState(false);
+  const [retryingLoad, setRetryingLoad] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  const [products, setProducts] = useState<TrackedProduct[]>([]);
-  const [settings, setSettings] = useState<AlertSettings>(DEFAULT_SETTINGS);
-  const [alerts, setAlerts] = useState<AlertLogEntry[]>([]);
-  const [capabilities, setCapabilities] = useState<ServerCapabilities>({
-    emailConfigured: false,
-    telegramBotConfigured: false,
-  });
+  const [products, setProducts] = useState<TrackedProduct[]>(
+    hasHydratedState && bootState?.bootstrap ? bootState.bootstrap.products : []
+  );
+  const [settings, setSettings] = useState<AlertSettings>(
+    hasHydratedState && bootState?.bootstrap ? bootState.bootstrap.settings : DEFAULT_SETTINGS
+  );
+  const [alerts, setAlerts] = useState<AlertLogEntry[]>(
+    hasHydratedState && bootState?.bootstrap ? bootState.bootstrap.alerts : []
+  );
+  const [capabilities, setCapabilities] = useState<ServerCapabilities>(
+    hasHydratedState && bootState?.bootstrap
+      ? bootState.bootstrap.capabilities
+      : DEFAULT_CAPABILITIES
+  );
 
   const [selectedProductId, setSelectedProductId] = useState<string | null>(null);
   const [checkingId, setCheckingId] = useState<string | null>(null);
@@ -109,21 +142,25 @@ export default function App() {
     setActiveSection('watchlist');
   }, []);
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
+  const applyBootstrap = useCallback((data: BootstrapResponse) => {
+    setProducts(data.products);
+    setSettings(data.settings);
+    setAlerts(data.alerts);
+    setCapabilities(data.capabilities);
     setLoadError(null);
+  }, []);
+
+  const loadData = useCallback(async () => {
+    setRetryingLoad(true);
     try {
       const data = await fetchBootstrap();
-      setProducts(data.products);
-      setSettings(data.settings);
-      setAlerts(data.alerts);
-      setCapabilities(data.capabilities);
+      applyBootstrap(data);
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : 'Unable to load watchlist data.');
     } finally {
-      setLoading(false);
+      setRetryingLoad(false);
     }
-  }, []);
+  }, [applyBootstrap]);
 
   useEffect(() => {
     setUnauthorizedListener(() => {
@@ -134,13 +171,26 @@ export default function App() {
   }, [clearProtectedState]);
 
   useEffect(() => {
+    registerPushServiceWorker();
+    if (hasHydratedState) return;
+
     let active = true;
     (async () => {
       try {
-        const status = await fetchAuthStatus();
+        const status = await fetchAuthStatus({ includeBootstrap: true });
         if (!active) return;
         setAuthConfigured(status.configured);
         if (status.authenticated && status.username) {
+          try {
+            const data = status.bootstrap ?? (await fetchBootstrap());
+            if (!active) return;
+            applyBootstrap(data);
+          } catch (err) {
+            if (!active) return;
+            setLoadError(
+              err instanceof Error ? err.message : 'Unable to load watchlist data.'
+            );
+          }
           setAuthUsername(status.username);
         }
       } catch {
@@ -149,17 +199,11 @@ export default function App() {
         if (active) setAuthChecking(false);
       }
     })();
-    registerPushServiceWorker();
+
     return () => {
       active = false;
     };
-  }, []);
-
-  useEffect(() => {
-    if (authUsername) {
-      loadData();
-    }
-  }, [authUsername, loadData]);
+  }, [applyBootstrap, hasHydratedState]);
 
   useEffect(() => {
     if (!authUsername) return;
@@ -265,8 +309,14 @@ export default function App() {
     };
   }, [authUsername, notifyAlert]);
 
-  function handleAuthenticated(token: string, username: string) {
+  async function handleAuthenticated(
+    token: string,
+    username: string,
+    bootstrap?: BootstrapResponse
+  ) {
     setAuthToken(token);
+    const data = bootstrap ?? (await fetchBootstrap());
+    applyBootstrap(data);
     setAuthConfigured(true);
     setAuthNotice(null);
     setAuthUsername(username);
@@ -413,11 +463,9 @@ export default function App() {
     return (
       <div
         aria-busy="true"
-        aria-label="Checking session"
-        className="min-h-screen bg-[#F8FAFC] flex items-center justify-center px-4"
-      >
-        <div className="w-full max-w-sm h-64 bg-white border border-slate-200 rounded-2xl animate-pulse" />
-      </div>
+        aria-label="Loading PricePulse"
+        className="min-h-screen bg-[#F8FAFC]"
+      />
     );
   }
 
@@ -472,13 +520,7 @@ export default function App() {
         </header>
 
         <main className="flex-1 px-4 sm:px-6 lg:px-8 py-6 max-w-[1200px] w-full mx-auto space-y-6">
-          {loading ? (
-            <div className="space-y-6" aria-busy="true" aria-label="Loading tracked products">
-              <div className="h-32 bg-white border border-slate-200 rounded-xl animate-pulse" />
-              <div className="h-24 bg-white border border-slate-200 rounded-xl animate-pulse" />
-              <div className="h-72 bg-white border border-slate-200 rounded-xl animate-pulse" />
-            </div>
-          ) : loadError ? (
+          {loadError ? (
             <div
               role="alert"
               className="bg-white border border-red-200 rounded-xl p-6 text-center space-y-3"
@@ -490,9 +532,10 @@ export default function App() {
               <button
                 type="button"
                 onClick={loadData}
-                className="px-4 py-2 text-sm font-medium bg-blue-700 hover:bg-blue-800 text-white rounded-lg cursor-pointer"
+                disabled={retryingLoad}
+                className="px-4 py-2 text-sm font-medium bg-blue-700 hover:bg-blue-800 disabled:opacity-60 text-white rounded-lg cursor-pointer"
               >
-                Retry
+                {retryingLoad ? 'Retrying...' : 'Retry'}
               </button>
             </div>
           ) : (

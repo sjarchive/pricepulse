@@ -27,11 +27,13 @@ export interface AuthStatusResponse {
   configured: boolean;
   authenticated: boolean;
   username: string | null;
+  bootstrap?: BootstrapResponse | null;
 }
 
 export interface AuthSessionResponse {
   token: string;
   username: string;
+  bootstrap?: BootstrapResponse;
 }
 
 async function requestJson<T>(
@@ -66,8 +68,13 @@ async function requestJson<T>(
   return data as T;
 }
 
-export async function fetchAuthStatus(): Promise<AuthStatusResponse> {
-  return requestJson<AuthStatusResponse>('/api/auth/status', undefined, {
+export async function fetchAuthStatus(
+  options: { includeBootstrap?: boolean } = {}
+): Promise<AuthStatusResponse> {
+  const url = options.includeBootstrap
+    ? '/api/auth/status?includeBootstrap=1'
+    : '/api/auth/status';
+  return requestJson<AuthStatusResponse>(url, undefined, {
     skipUnauthorizedHook: true,
   });
 }
