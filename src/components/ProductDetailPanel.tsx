@@ -224,7 +224,7 @@ export function ProductDetailPanel({
               {' · '}
               <span>Next check {formatCountdown(product.nextCheckAt, nowMs)}</span>
             </p>
-            <h3 className="font-display text-base sm:text-lg font-semibold text-slate-900 mt-1 leading-snug break-words">
+            <h3 className="font-display text-base sm:text-lg font-semibold text-slate-900 mt-1 leading-snug break-words selectable-text">
               {product.title}
             </h3>
             <div className="mt-2.5 flex flex-wrap items-center gap-4 text-xs">
@@ -266,25 +266,25 @@ export function ProductDetailPanel({
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 pb-5 border-b border-slate-200">
         <div className="min-w-0">
           <p className="text-xs text-slate-500">Current Price</p>
-          <p className="mt-1 font-mono text-lg sm:text-xl font-semibold tabular-nums text-slate-900 truncate">
+          <p className="mt-1 font-mono text-lg sm:text-xl font-semibold tabular-nums text-slate-900 truncate selectable-text">
             {formatCurrency(product.currentPrice, product.currency)}
           </p>
         </div>
         <div className="min-w-0">
           <p className="text-xs text-slate-500">All-Time Low</p>
-          <p className="mt-1 font-mono text-lg sm:text-xl font-semibold tabular-nums text-emerald-700 truncate">
+          <p className="mt-1 font-mono text-lg sm:text-xl font-semibold tabular-nums text-emerald-700 truncate selectable-text">
             {formatCurrency(product.lowestPrice, product.currency)}
           </p>
         </div>
         <div className="min-w-0">
           <p className="text-xs text-slate-500">Average Price</p>
-          <p className="mt-1 font-mono text-lg sm:text-xl font-semibold tabular-nums text-slate-700 truncate">
+          <p className="mt-1 font-mono text-lg sm:text-xl font-semibold tabular-nums text-slate-700 truncate selectable-text">
             {formatCurrency(avgPrice, product.currency)}
           </p>
         </div>
         <div className="min-w-0">
           <p className="text-xs text-slate-500">All-Time High</p>
-          <p className="mt-1 font-mono text-lg sm:text-xl font-semibold tabular-nums text-slate-700 truncate">
+          <p className="mt-1 font-mono text-lg sm:text-xl font-semibold tabular-nums text-slate-700 truncate selectable-text">
             {formatCurrency(product.highestPrice, product.currency)}
           </p>
         </div>
@@ -367,7 +367,7 @@ export function ProductDetailPanel({
           </ResponsiveContainer>
         </div>
         {product.lastCheckNote && (
-          <p className="mt-2 text-xs text-slate-500">Latest note: {product.lastCheckNote}</p>
+          <p className="mt-2 text-xs text-slate-500 selectable-text">Latest note: {product.lastCheckNote}</p>
         )}
       </div>
 

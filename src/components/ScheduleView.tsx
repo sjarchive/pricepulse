@@ -251,7 +251,7 @@ export function ScheduleView({
               {products.map((product) => (
                 <div key={product.id} className="p-4 space-y-3">
                   <div className="min-w-0">
-                    <p className="text-sm font-medium text-slate-900 leading-snug break-words">
+                    <p className="text-sm font-medium text-slate-900 leading-snug break-words selectable-text">
                       {product.title}
                     </p>
                     <p className="text-xs text-slate-500 mt-0.5">{product.platformLabel}</p>
@@ -319,7 +319,7 @@ export function ScheduleView({
                   {products.map((product) => (
                     <tr key={product.id} className="hover:bg-slate-50/70">
                       <td className="py-3 pl-5 pr-4 max-w-xs">
-                        <p className="font-medium text-slate-900 truncate">{product.title}</p>
+                        <p className="font-medium text-slate-900 truncate selectable-text">{product.title}</p>
                       </td>
                       <td className="py-3 px-4 text-xs text-slate-600 whitespace-nowrap">
                         {product.platformLabel}

@@ -276,10 +276,10 @@ export function WatchlistView({
                         <p className="text-[11px] font-medium text-slate-500 leading-tight">
                           Current Price
                         </p>
-                        <p className="font-mono text-base font-semibold tabular-nums text-slate-900 leading-tight mt-1">
+                        <p className="font-mono text-base font-semibold tabular-nums text-slate-900 leading-tight mt-1 selectable-text">
                           {formatCurrency(product.currentPrice, product.currency)}
                         </p>
-                        <p className="text-xs font-mono tabular-nums text-slate-500 leading-tight mt-1">
+                        <p className="text-xs font-mono tabular-nums text-slate-500 leading-tight mt-1 selectable-text">
                           Low {formatCurrency(product.lowestPrice, product.currency)}
                         </p>
                       </div>
@@ -287,7 +287,7 @@ export function WatchlistView({
                         <p className="text-[11px] font-medium text-slate-500 leading-tight">
                           Target / Change
                         </p>
-                        <p className="font-mono text-base font-medium tabular-nums text-slate-700 leading-tight mt-1">
+                        <p className="font-mono text-base font-medium tabular-nums text-slate-700 leading-tight mt-1 selectable-text">
                           {product.targetPrice !== null
                             ? formatCurrency(product.targetPrice, product.currency)
                             : 'Any drop'}
@@ -424,16 +424,16 @@ export function WatchlistView({
                         </td>
 
                         <td className="py-3.5 px-4 text-right whitespace-nowrap">
-                          <p className="font-mono font-semibold tabular-nums text-slate-900">
+                          <p className="font-mono font-semibold tabular-nums text-slate-900 selectable-text">
                             {formatCurrency(product.currentPrice, product.currency)}
                           </p>
-                          <p className="text-xs font-mono tabular-nums text-slate-500 mt-0.5">
+                          <p className="text-xs font-mono tabular-nums text-slate-500 mt-0.5 selectable-text">
                             Low {formatCurrency(product.lowestPrice, product.currency)}
                           </p>
                         </td>
 
                         <td className="py-3.5 px-4 text-right whitespace-nowrap">
-                          <span className="font-mono tabular-nums text-slate-700">
+                          <span className="font-mono tabular-nums text-slate-700 selectable-text">
                             {product.targetPrice !== null
                               ? formatCurrency(product.targetPrice, product.currency)
                               : 'Any drop'}

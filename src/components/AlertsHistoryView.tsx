@@ -191,15 +191,15 @@ export function AlertsHistoryView({
                         {formatRelativeTime(entry.triggeredAt, nowMs)}
                       </span>
                     </p>
-                    <h3 className="text-sm font-semibold text-slate-900 mt-1 break-words">
+                    <h3 className="text-sm font-semibold text-slate-900 mt-1 break-words selectable-text">
                       {entry.productTitle}
                     </h3>
-                    <p className="text-sm text-slate-600 mt-0.5 break-words">{entry.message}</p>
+                    <p className="text-sm text-slate-600 mt-0.5 break-words selectable-text">{entry.message}</p>
                   </div>
 
                   <div className="flex items-start gap-2.5 shrink-0">
                     {entry.previousPrice !== null && entry.newPrice !== null && (
-                      <div className="text-right">
+                      <div className="text-right selectable-text">
                         <p className="font-mono text-sm font-semibold tabular-nums text-emerald-700">
                           {formatCurrency(entry.newPrice, entry.currency)}
                         </p>
@@ -234,7 +234,7 @@ export function AlertsHistoryView({
                           </span>{' '}
                           <span className={statusInfo.className}>{statusInfo.label}</span>
                         </p>
-                        <p className="text-slate-500 leading-relaxed break-words">{d.detail}</p>
+                        <p className="text-slate-500 leading-relaxed break-words selectable-text">{d.detail}</p>
                       </div>
                     );
                   })}

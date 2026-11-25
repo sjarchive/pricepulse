@@ -377,7 +377,7 @@ export function AlertSetupView({
               </p>
               {!capabilities.emailConfigured && (
                 <p className="leading-relaxed">
-                  Add <span className="font-mono text-slate-700">RESEND_API_KEY</span> in secrets for live inbox delivery.
+                  Add <span className="font-mono text-slate-700 selectable-text">RESEND_API_KEY</span> in secrets for live inbox delivery.
                 </p>
               )}
             </div>
@@ -443,8 +443,8 @@ export function AlertSetupView({
                 </span>
               </p>
               <ol className="list-decimal list-inside space-y-0.5 text-slate-500 leading-relaxed">
-                <li>Message <span className="font-mono text-slate-700">@userinfobot</span> on Telegram to get your numeric Chat ID.</li>
-                <li>Start your bot created via <span className="font-mono text-slate-700">@BotFather</span> and add its token to server secrets.</li>
+                <li>Message <span className="font-mono text-slate-700 selectable-text">@userinfobot</span> on Telegram to get your numeric Chat ID.</li>
+                <li>Start your bot created via <span className="font-mono text-slate-700 selectable-text">@BotFather</span> and add its token to server secrets.</li>
               </ol>
             </div>
           </div>
