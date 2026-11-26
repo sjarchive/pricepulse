@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { Bell, Mail, Send } from 'lucide-react';
-import { showBrowserPushNotification } from '../api/client';
+import { showBrowserPushNotification, type SyncPushResult } from '../api/client';
 import { isValidEmail, isValidTelegramChatId } from '../lib/priceUtils';
 import type {
   AlertLogEntry,
@@ -12,6 +12,8 @@ import type {
 interface AlertSetupViewProps {
   settings: AlertSettings;
   capabilities: ServerCapabilities;
+  browserPushSubscribed: boolean;
+  onSyncPushSubscription: () => Promise<SyncPushResult>;
   onSaveSettings: (next: AlertSettings) => Promise<void>;
   onSendTest: (channel?: 'email' | 'telegram' | 'push') => Promise<AlertLogEntry>;
 }
@@ -19,6 +21,8 @@ interface AlertSetupViewProps {
 export function AlertSetupView({
   settings,
   capabilities,
+  browserPushSubscribed,
+  onSyncPushSubscription,
   onSaveSettings,
   onSendTest,
 }: AlertSetupViewProps) {
@@ -36,6 +40,7 @@ export function AlertSetupView({
   });
 
   const [saving, setSaving] = useState(false);
+  const [subscribingPush, setSubscribingPush] = useState(false);
   const [testingChannel, setTestingChannel] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
@@ -134,20 +139,47 @@ export function AlertSetupView({
     }
   }
 
+  async function handleSubscribeBrowserPush() {
+    setFeedback(null);
+    setSubscribingPush(true);
+    try {
+      const synced = await onSyncPushSubscription();
+      if (synced.subscribed) {
+        setPushEnabled(true);
+        setFeedback({
+          type: 'ok',
+          text: 'This browser is now subscribed for background Chrome push notifications.',
+        });
+      } else {
+        setFeedback({
+          type: 'err',
+          text: synced.error || 'Could not subscribe this browser for background push notifications.',
+        });
+      }
+    } finally {
+      setSubscribingPush(false);
+    }
+  }
+
   async function handleRequestPushPermission() {
     if (typeof window === 'undefined' || !('Notification' in window)) {
       setBrowserPermission('unsupported');
       return;
     }
+    setFeedback(null);
     try {
       const result = await Notification.requestPermission();
       setBrowserPermission(result);
       if (result === 'granted') {
         setPushEnabled(true);
-        await showBrowserPushNotification(
-          'PricePulse Browser Push Enabled',
-          'You will receive instant alerts here whenever a tracked product drops in price.'
-        );
+        if (capabilities.pushConfigured) {
+          await handleSubscribeBrowserPush();
+        } else {
+          await showBrowserPushNotification(
+            'PricePulse Browser Push Enabled',
+            'You will receive instant alerts here whenever a tracked product drops in price.'
+          );
+        }
       }
     } catch {
       setFeedback({
@@ -172,17 +204,38 @@ export function AlertSetupView({
         await onSaveSettings(validated.next);
       }
 
+      let isSubscribedNow = browserPushSubscribed;
+      if (
+        (!channel || channel === 'push') &&
+        validated.next.push.enabled &&
+        browserPermission === 'granted' &&
+        capabilities.pushConfigured &&
+        !isSubscribedNow
+      ) {
+        const synced = await onSyncPushSubscription();
+        isSubscribedNow = synced.subscribed;
+      }
+
       const alert = await onSendTest(channel);
       const targeted = channel
         ? alert.deliveries.filter((d) => d.channel === channel)
         : alert.deliveries;
       const failed = targeted.find((d) => d.status === 'failed');
       const sentOrLogged = targeted.filter((d) => d.status === 'sent' || d.status === 'logged');
+      const pushDelivery = targeted.find((d) => d.channel === 'push');
 
-      if ((!channel || channel === 'push') && validated.next.push.enabled) {
+      // Only trigger a local in-tab notification fallback if real Web Push did not already send it
+      if (
+        (!channel || channel === 'push') &&
+        validated.next.push.enabled &&
+        pushDelivery?.status === 'logged' &&
+        !isSubscribedNow
+      ) {
         await showBrowserPushNotification(
           'PricePulse Test Alert',
-          'Instant browser push notifications are active.'
+          'In-tab browser notifications are active.',
+          '/',
+          `pricepulse-${alert.id}`
         );
       }
 
@@ -505,8 +558,26 @@ export function AlertSetupView({
                   {browserPermission}
                 </span>
               </p>
+              <p>
+                Background Web Push:{' '}
+                <span
+                  className={`font-medium ${
+                    !capabilities.pushConfigured
+                      ? 'text-amber-700'
+                      : browserPushSubscribed
+                        ? 'text-emerald-700'
+                        : 'text-amber-700'
+                  }`}
+                >
+                  {!capabilities.pushConfigured
+                    ? 'Set VAPID keys in server secrets'
+                    : browserPushSubscribed
+                      ? `Active on this browser (${Math.max(1, capabilities.pushSubscriptionCount)} device${Math.max(1, capabilities.pushSubscriptionCount) === 1 ? '' : 's'})`
+                      : 'Not subscribed on this browser yet'}
+                </span>
+              </p>
               <p className="text-slate-500 leading-relaxed">
-                Uses the browser Notifications API and live event stream to surface instant desktop and mobile push alerts on every price drop.
+                Uses Web Push (VAPID) and a background Service Worker so Chrome delivers price drop alerts even when the PricePulse tab is closed.
               </p>
             </div>
 
@@ -514,11 +585,25 @@ export function AlertSetupView({
               <button
                 type="button"
                 onClick={handleRequestPushPermission}
-                className="w-full h-9 px-3 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors cursor-pointer"
+                disabled={subscribingPush}
+                className="w-full h-9 px-3 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 disabled:opacity-50 border border-blue-200 rounded-lg transition-colors cursor-pointer"
               >
-                Enable Browser Push Permission
+                {subscribingPush ? 'Subscribing...' : 'Enable Browser Push Permission'}
               </button>
             )}
+
+            {browserPermission === 'granted' &&
+              capabilities.pushConfigured &&
+              !browserPushSubscribed && (
+                <button
+                  type="button"
+                  onClick={handleSubscribeBrowserPush}
+                  disabled={subscribingPush}
+                  className="w-full h-9 px-3 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 disabled:opacity-50 border border-blue-200 rounded-lg transition-colors cursor-pointer"
+                >
+                  {subscribingPush ? 'Subscribing Browser...' : 'Subscribe This Browser for Background Push'}
+                </button>
+              )}
             {browserPermission === 'denied' && (
               <p className="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 leading-relaxed">
                 Native OS notifications are blocked in your browser site settings. Allow notifications for this site to receive OS popups; live in-app push alerts remain active.

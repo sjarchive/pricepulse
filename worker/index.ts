@@ -24,6 +24,7 @@ import {
   validateCheckInterval,
 } from '../src/lib/priceUtils';
 import { injectInitialStateIntoHtml } from '../src/lib/initialState';
+import { resolveVapidConfig, validatePushSubscriptionInput } from '../src/lib/webPush';
 import type {
   AlertLogEntry,
   AlertSettings,
@@ -34,8 +35,10 @@ import type {
 } from '../src/types/tracker';
 import {
   clearAlertsD1,
+  countPushSubscriptionsD1,
   deleteAlertD1,
   deleteProductD1,
+  deletePushSubscriptionD1,
   ensureD1Schema,
   getAlertsD1,
   getAllProductsD1,
@@ -51,6 +54,7 @@ import {
   updateProductCheckStatusD1,
   updateProductMetaD1,
   updateProductPriceD1,
+  upsertPushSubscriptionD1,
 } from './db';
 import { dispatchEdgeAlert, getWorkerCapabilities } from './notifier';
 import { previewProductUrlEdge, validateEdgePublicUrl } from './scraper';
@@ -229,16 +233,17 @@ async function executeProductCheckEdge(
 }
 
 async function buildWorkerBootstrap(env: WorkerEnv): Promise<BootstrapResponse> {
-  const [products, settings, alerts] = await Promise.all([
+  const [products, settings, alerts, pushSubscriptionCount] = await Promise.all([
     getAllProductsD1(env.DB),
     getSettingsD1(env.DB),
     getAlertsD1(env.DB),
+    countPushSubscriptionsD1(env.DB),
   ]);
   return {
     products,
     settings,
     alerts,
-    capabilities: getWorkerCapabilities(env),
+    capabilities: getWorkerCapabilities(env, pushSubscriptionCount),
   };
 }
 
@@ -712,12 +717,51 @@ app.put('/api/settings', async (c) => {
   };
 
   const saved = await saveSettingsD1(c.env.DB, nextSettings, Boolean(body.applyIntervalToAll));
-  const products = await getAllProductsD1(c.env.DB);
+  const [products, pushSubscriptionCount] = await Promise.all([
+    getAllProductsD1(c.env.DB),
+    countPushSubscriptionsD1(c.env.DB),
+  ]);
   return c.json({
     settings: saved,
     products,
-    capabilities: getWorkerCapabilities(c.env),
+    capabilities: getWorkerCapabilities(c.env, pushSubscriptionCount),
   });
+});
+
+app.get('/api/push/config', async (c) => {
+  const vapid = resolveVapidConfig(c.env);
+  const subscriptionCount = await countPushSubscriptionsD1(c.env.DB);
+  return c.json({
+    configured: Boolean(vapid),
+    vapidPublicKey: vapid ? vapid.publicKey : null,
+    subscriptionCount,
+  });
+});
+
+app.post('/api/push/subscribe', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const validated = validatePushSubscriptionInput(body);
+  if (!validated.valid) {
+    return c.json({ error: validated.error }, 400);
+  }
+  const userAgent = (c.req.header('user-agent') || '').slice(0, 240) || null;
+  await upsertPushSubscriptionD1(c.env.DB, {
+    ...validated.subscription,
+    userAgent,
+  });
+  const subscriptionCount = await countPushSubscriptionsD1(c.env.DB);
+  return c.json({ subscribed: true, subscriptionCount });
+});
+
+app.post('/api/push/unsubscribe', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const endpoint = typeof body?.endpoint === 'string' ? body.endpoint.trim() : '';
+  if (!endpoint) {
+    return c.json({ error: 'Push endpoint is required.' }, 400);
+  }
+  await deletePushSubscriptionD1(c.env.DB, endpoint);
+  const subscriptionCount = await countPushSubscriptionsD1(c.env.DB);
+  return c.json({ unsubscribed: true, subscriptionCount });
 });
 
 app.post('/api/notifications/test', async (c) => {

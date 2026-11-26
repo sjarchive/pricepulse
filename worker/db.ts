@@ -1,4 +1,5 @@
 import type { StoredAuthRecord } from '../src/lib/authCrypto';
+import type { StoredPushSubscription } from '../src/lib/webPush';
 import { computeNextCheckAt } from '../src/lib/priceUtils';
 import type {
   AlertLogEntry,
@@ -72,6 +73,15 @@ interface AlertRow {
 interface AuthCredentialsRow {
   username: string;
   password_hash: string;
+  updated_at: string;
+}
+
+interface PushSubscriptionRow {
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  user_agent: string | null;
+  created_at: string;
   updated_at: string;
 }
 
@@ -185,6 +195,14 @@ export async function ensureD1Schema(db: D1Database): Promise<void> {
         db.prepare(`CREATE TABLE IF NOT EXISTS revoked_tokens (
       jti TEXT PRIMARY KEY,
       expires_at INTEGER NOT NULL
+    )`),
+        db.prepare(`CREATE TABLE IF NOT EXISTS push_subscriptions (
+      endpoint TEXT PRIMARY KEY,
+      p256dh TEXT NOT NULL,
+      auth TEXT NOT NULL,
+      user_agent TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
     )`),
       ])
       .then(() => undefined)
@@ -598,4 +616,66 @@ export async function revokeTokenD1(
       )
       .bind(jti, expiresAtSec),
   ]);
+}
+
+export async function getPushSubscriptionsD1(db: D1Database): Promise<StoredPushSubscription[]> {
+  const res = await db
+    .prepare(
+      'SELECT endpoint, p256dh, auth, user_agent, created_at, updated_at FROM push_subscriptions ORDER BY updated_at DESC'
+    )
+    .all<PushSubscriptionRow>();
+  return res.results.map((row) => ({
+    endpoint: row.endpoint,
+    p256dh: row.p256dh,
+    auth: row.auth,
+    userAgent: row.user_agent,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
+}
+
+export async function countPushSubscriptionsD1(db: D1Database): Promise<number> {
+  const row = await db
+    .prepare('SELECT COUNT(*) AS count FROM push_subscriptions')
+    .first<{ count: number }>();
+  return Number(row?.count ?? 0);
+}
+
+export async function upsertPushSubscriptionD1(
+  db: D1Database,
+  sub: StoredPushSubscription
+): Promise<void> {
+  const nowIso = new Date().toISOString();
+  await db
+    .prepare(
+      `INSERT INTO push_subscriptions (endpoint, p256dh, auth, user_agent, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(endpoint) DO UPDATE SET
+         p256dh = excluded.p256dh,
+         auth = excluded.auth,
+         user_agent = excluded.user_agent,
+         updated_at = excluded.updated_at`
+    )
+    .bind(
+      sub.endpoint,
+      sub.p256dh,
+      sub.auth,
+      sub.userAgent ?? null,
+      sub.createdAt || nowIso,
+      nowIso
+    )
+    .run();
+}
+
+export async function deletePushSubscriptionD1(
+  db: D1Database,
+  endpoint: string
+): Promise<boolean> {
+  const existing = await db
+    .prepare('SELECT endpoint FROM push_subscriptions WHERE endpoint = ?')
+    .bind(endpoint)
+    .first();
+  if (!existing) return false;
+  await db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?').bind(endpoint).run();
+  return true;
 }

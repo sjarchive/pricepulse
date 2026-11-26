@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { StoredAuthRecord } from '../src/lib/authCrypto';
+import type { StoredPushSubscription } from '../src/lib/webPush';
 import { computeNextCheckAt } from '../src/lib/priceUtils';
 import type {
   AlertLogEntry,
@@ -14,6 +15,7 @@ export interface TrackerDatabase {
   alerts: AlertLogEntry[];
   auth?: StoredAuthRecord | null;
   revokedTokens?: Record<string, number>;
+  pushSubscriptions?: StoredPushSubscription[];
 }
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
@@ -196,6 +198,37 @@ class TrackerStore {
     }
     this.data.revokedTokens = next;
     this.persist(this.data);
+  }
+
+  public getPushSubscriptions(): StoredPushSubscription[] {
+    return Array.isArray(this.data.pushSubscriptions) ? this.data.pushSubscriptions : [];
+  }
+
+  public upsertPushSubscription(sub: StoredPushSubscription): number {
+    const nowIso = new Date().toISOString();
+    const list = this.getPushSubscriptions();
+    const existing = list.find((item) => item.endpoint === sub.endpoint);
+    const nextItem: StoredPushSubscription = {
+      endpoint: sub.endpoint,
+      p256dh: sub.p256dh,
+      auth: sub.auth,
+      userAgent: sub.userAgent ?? existing?.userAgent ?? null,
+      createdAt: existing?.createdAt || sub.createdAt || nowIso,
+      updatedAt: nowIso,
+    };
+    this.data.pushSubscriptions = [
+      nextItem,
+      ...list.filter((item) => item.endpoint !== sub.endpoint),
+    ];
+    this.persist(this.data);
+    return this.data.pushSubscriptions.length;
+  }
+
+  public deletePushSubscription(endpoint: string): number {
+    const list = this.getPushSubscriptions();
+    this.data.pushSubscriptions = list.filter((item) => item.endpoint !== endpoint);
+    this.persist(this.data);
+    return this.data.pushSubscriptions.length;
   }
 }
 

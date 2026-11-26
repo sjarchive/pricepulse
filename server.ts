@@ -28,6 +28,7 @@ import {
   validateCheckInterval,
 } from './src/lib/priceUtils';
 import { injectInitialStateIntoHtml } from './src/lib/initialState';
+import { resolveVapidConfig, validatePushSubscriptionInput } from './src/lib/webPush';
 import type {
   AlertLogEntry,
   AlertSettings,
@@ -709,6 +710,42 @@ async function startServer() {
       products: trackerStore.getProducts(),
       capabilities: getServerCapabilities(),
     });
+  });
+
+  app.get('/api/push/config', (_req, res) => {
+    const vapid = resolveVapidConfig(process.env);
+    res.json({
+      configured: Boolean(vapid),
+      vapidPublicKey: vapid ? vapid.publicKey : null,
+      subscriptionCount: trackerStore.getPushSubscriptions().length,
+    });
+  });
+
+  app.post('/api/push/subscribe', (req, res) => {
+    const validated = validatePushSubscriptionInput(req.body);
+    if (!validated.valid) {
+      res.status(400).json({ error: validated.error });
+      return;
+    }
+    const userAgent =
+      typeof req.headers['user-agent'] === 'string'
+        ? req.headers['user-agent'].slice(0, 240)
+        : null;
+    const subscriptionCount = trackerStore.upsertPushSubscription({
+      ...validated.subscription,
+      userAgent,
+    });
+    res.json({ subscribed: true, subscriptionCount });
+  });
+
+  app.post('/api/push/unsubscribe', (req, res) => {
+    const endpoint = typeof req.body?.endpoint === 'string' ? req.body.endpoint.trim() : '';
+    if (!endpoint) {
+      res.status(400).json({ error: 'Push endpoint is required.' });
+      return;
+    }
+    const subscriptionCount = trackerStore.deletePushSubscription(endpoint);
+    res.json({ unsubscribed: true, subscriptionCount });
   });
 
   // Send a test notification (all channels or one specific channel)

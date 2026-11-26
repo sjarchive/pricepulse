@@ -48,6 +48,9 @@ const sampleBootstrap: BootstrapResponse = {
   capabilities: {
     emailConfigured: false,
     telegramBotConfigured: false,
+    pushConfigured: false,
+    vapidPublicKey: null,
+    pushSubscriptionCount: 0,
   },
 };
 

@@ -68,6 +68,9 @@ export interface AlertSettings {
 export interface ServerCapabilities {
   emailConfigured: boolean;
   telegramBotConfigured: boolean;
+  pushConfigured: boolean;
+  vapidPublicKey: string | null;
+  pushSubscriptionCount: number;
 }
 
 export type ChannelDeliveryStatus = 'sent' | 'logged' | 'disabled' | 'failed';

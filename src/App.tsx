@@ -17,6 +17,7 @@ import {
   setAuthToken,
   setUnauthorizedListener,
   showBrowserPushNotification,
+  syncBrowserPushSubscription,
   updateTrackedProduct,
 } from './api/client';
 import { AlertSetupView } from './components/AlertSetupView';
@@ -58,6 +59,9 @@ const DEFAULT_SETTINGS: AlertSettings = {
 const DEFAULT_CAPABILITIES: ServerCapabilities = {
   emailConfigured: false,
   telegramBotConfigured: false,
+  pushConfigured: false,
+  vapidPublicKey: null,
+  pushSubscriptionCount: 0,
 };
 
 let cachedBootState: InitialAppState | null | undefined = undefined;
@@ -110,6 +114,8 @@ export default function App() {
   const [checkingId, setCheckingId] = useState<string | null>(null);
   const [runningCycle, setRunningCycle] = useState(false);
   const [liveToastAlert, setLiveToastAlert] = useState<AlertLogEntry | null>(null);
+  const [browserPushSubscribed, setBrowserPushSubscribed] = useState(false);
+  const browserPushSubscribedRef = useRef(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
@@ -123,14 +129,33 @@ export default function App() {
     notifiedAlertIdsRef.current.add(alert.id);
     setLiveToastAlert(alert);
     if (showOsPush) {
-      const pushEnabled = alert.deliveries.some(
-        (d) => d.channel === 'push' && d.status !== 'disabled'
-      );
-      if (pushEnabled) {
-        showBrowserPushNotification(alert.productTitle, alert.message, alert.productUrl);
+      const pushDelivery = alert.deliveries.find((d) => d.channel === 'push');
+      const pushActive = Boolean(pushDelivery && pushDelivery.status !== 'disabled');
+      const deliveredByServerPush =
+        browserPushSubscribedRef.current && pushDelivery?.status === 'sent';
+      if (pushActive && !deliveredByServerPush) {
+        showBrowserPushNotification(
+          alert.productTitle,
+          alert.message,
+          alert.productUrl,
+          `pricepulse-${alert.id}`
+        );
       }
     }
   }, []);
+
+  const syncPushSubscription = useCallback(async () => {
+    const result = await syncBrowserPushSubscription(capabilities.vapidPublicKey);
+    browserPushSubscribedRef.current = result.subscribed;
+    setBrowserPushSubscribed(result.subscribed);
+    if (typeof result.subscriptionCount === 'number') {
+      setCapabilities((prev) => ({
+        ...prev,
+        pushSubscriptionCount: result.subscriptionCount!,
+      }));
+    }
+    return result;
+  }, [capabilities.vapidPublicKey]);
 
   const clearProtectedState = useCallback(() => {
     setAuthUsername(null);
@@ -141,6 +166,8 @@ export default function App() {
     setLiveToastAlert(null);
     setLoadError(null);
     setActionError(null);
+    browserPushSubscribedRef.current = false;
+    setBrowserPushSubscribed(false);
     notifiedAlertIdsRef.current.clear();
     setActiveSection('watchlist');
   }, []);
@@ -215,6 +242,32 @@ export default function App() {
     }, 30_000);
     return () => clearInterval(timer);
   }, [authUsername]);
+
+  // Automatically register/sync this browser's Web Push subscription whenever
+  // permission is already granted so background cron drops push directly to Chrome.
+  useEffect(() => {
+    if (!authUsername || !settings.push.enabled || !capabilities.vapidPublicKey) return;
+    if (typeof window === 'undefined' || !('Notification' in window)) return;
+    if (Notification.permission !== 'granted') return;
+    let active = true;
+    syncBrowserPushSubscription(capabilities.vapidPublicKey)
+      .then((res) => {
+        if (!active) return;
+        browserPushSubscribedRef.current = res.subscribed;
+        setBrowserPushSubscribed(res.subscribed);
+        if (typeof res.subscriptionCount === 'number') {
+          setCapabilities((prev) =>
+            prev.pushSubscriptionCount === res.subscriptionCount
+              ? prev
+              : { ...prev, pushSubscriptionCount: res.subscriptionCount! }
+          );
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [authUsername, settings.push.enabled, capabilities.vapidPublicKey]);
 
   // Authenticated real-time SSE alert stream (Node) with polling fallback (Cloudflare Workers)
   useEffect(() => {
@@ -646,6 +699,8 @@ export default function App() {
                   <AlertSetupView
                     settings={settings}
                     capabilities={capabilities}
+                    browserPushSubscribed={browserPushSubscribed}
+                    onSyncPushSubscription={syncPushSubscription}
                     onSaveSettings={(next) => handleSaveSettings(next, false)}
                     onSendTest={handleSendTest}
                   />

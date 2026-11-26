@@ -1,5 +1,7 @@
 import crypto from 'node:crypto';
 import { formatCurrency, isValidEmail, isValidTelegramChatId } from '../src/lib/priceUtils';
+import { resolveVapidConfig, sendWebPushMessage } from '../src/lib/webPush';
+import { trackerStore } from './store';
 import type {
   AlertLogEntry,
   AlertSettings,
@@ -31,6 +33,7 @@ function broadcastSse(event: SseAlertEvent): void {
 }
 
 export function getServerCapabilities(): ServerCapabilities {
+  const vapid = resolveVapidConfig(process.env);
   return {
     emailConfigured: Boolean(
       process.env.RESEND_API_KEY && process.env.RESEND_API_KEY.trim().length > 0
@@ -38,6 +41,9 @@ export function getServerCapabilities(): ServerCapabilities {
     telegramBotConfigured: Boolean(
       process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_BOT_TOKEN.trim().length > 0
     ),
+    pushConfigured: Boolean(vapid),
+    vapidPublicKey: vapid ? vapid.publicKey : null,
+    pushSubscriptionCount: trackerStore.getPushSubscriptions().length,
   };
 }
 
@@ -184,7 +190,13 @@ async function sendTelegramChannel(
   }
 }
 
-function sendPushChannel(settings: AlertSettings): ChannelDeliveryResult {
+async function sendPushChannel(
+  settings: AlertSettings,
+  alertId: string,
+  title: string,
+  body: string,
+  url: string | null
+): Promise<ChannelDeliveryResult> {
   if (!settings.push.enabled) {
     return {
       channel: 'push',
@@ -193,11 +205,59 @@ function sendPushChannel(settings: AlertSettings): ChannelDeliveryResult {
       detail: 'Browser push alerts are turned off.',
     };
   }
+
+  const vapid = resolveVapidConfig(process.env);
+  const subscriptions = trackerStore.getPushSubscriptions();
+
+  if (vapid && subscriptions.length > 0) {
+    const results = await Promise.all(
+      subscriptions.map(async (sub) => {
+        const outcome = await sendWebPushMessage(
+          sub,
+          { title, body, url: url || '/', tag: `pricepulse-${alertId}`, alertId },
+          vapid
+        );
+        if (outcome.gone) {
+          trackerStore.deletePushSubscription(sub.endpoint);
+        }
+        return outcome;
+      })
+    );
+    const delivered = results.filter((r) => r.ok).length;
+    if (delivered > 0) {
+      const label = delivered === 1 ? '1 subscribed browser' : `${delivered} subscribed browsers`;
+      return {
+        channel: 'push',
+        status: 'sent',
+        destination: label,
+        detail: `Delivered background Web Push notification to ${label}.`,
+      };
+    }
+    const firstErr = results.find((r) => !r.ok)?.error;
+    return {
+      channel: 'push',
+      status: 'failed',
+      destination: `${subscriptions.length} subscribed browser(s)`,
+      detail: firstErr || 'Web Push delivery failed for all registered browsers.',
+    };
+  }
+
+  if (vapid && subscriptions.length === 0) {
+    return {
+      channel: 'push',
+      status: 'failed',
+      destination: '0 subscribed browsers',
+      detail:
+        'No browser push subscription is registered yet. Open Alert Setup in Chrome and enable Browser Push.',
+    };
+  }
+
   return {
     channel: 'push',
-    status: 'sent',
+    status: 'logged',
     destination: `${sseClients.size || 1} active browser session`,
-    detail: 'Dispatched instant browser push notification.',
+    detail:
+      'Delivered to open browser session. Set VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY for background Web Push.',
   };
 }
 
@@ -220,10 +280,14 @@ export async function dispatchMultiChannelAlert(
   settings: AlertSettings,
   params: DispatchAlertParams
 ): Promise<AlertLogEntry> {
+  const alertId = `alert-${crypto.randomUUID().slice(0, 8)}`;
   const isDrop = params.type === 'price_drop' && params.previousPrice !== null && params.newPrice !== null;
   const subject = isDrop
     ? `Price Drop (${params.dropPercent}%): ${params.productTitle}`
     : `PricePulse Test Alert — Notification Check`;
+  const pushTitle = isDrop
+    ? `Price Drop (${params.dropPercent}%): ${params.productTitle}`
+    : `PricePulse Test Alert`;
 
   const message =
     params.customMessage ||
@@ -249,11 +313,11 @@ export async function dispatchMultiChannelAlert(
     deliveries.push(await sendTelegramChannel(settings, fullText));
   }
   if (!params.onlyChannel || params.onlyChannel === 'push') {
-    deliveries.push(sendPushChannel(settings));
+    deliveries.push(await sendPushChannel(settings, alertId, pushTitle, message, params.productUrl));
   }
 
   const entry: AlertLogEntry = {
-    id: `alert-${crypto.randomUUID().slice(0, 8)}`,
+    id: alertId,
     type: params.type,
     productId: params.productId,
     productTitle: params.productTitle,

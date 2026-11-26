@@ -1,4 +1,5 @@
 import { formatCurrency, isValidEmail, isValidTelegramChatId } from '../src/lib/priceUtils';
+import { resolveVapidConfig, sendWebPushMessage } from '../src/lib/webPush';
 import type {
   AlertLogEntry,
   AlertSettings,
@@ -6,14 +7,22 @@ import type {
   CurrencyCode,
   ServerCapabilities,
 } from '../src/types/tracker';
+import { deletePushSubscriptionD1, getPushSubscriptionsD1 } from './db';
 import type { WorkerEnv } from './types';
 
-export function getWorkerCapabilities(env: WorkerEnv): ServerCapabilities {
+export function getWorkerCapabilities(
+  env: WorkerEnv,
+  pushSubscriptionCount: number = 0
+): ServerCapabilities {
+  const vapid = resolveVapidConfig(env);
   return {
     emailConfigured: Boolean(env.RESEND_API_KEY && env.RESEND_API_KEY.trim().length > 0),
     telegramBotConfigured: Boolean(
       env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_BOT_TOKEN.trim().length > 0
     ),
+    pushConfigured: Boolean(vapid),
+    vapidPublicKey: vapid ? vapid.publicKey : null,
+    pushSubscriptionCount,
   };
 }
 
@@ -31,7 +40,6 @@ async function sendEmailEdge(
       detail: 'Email alerts are turned off.',
     };
   }
-
   if (!isValidEmail(settings.email.address)) {
     return {
       channel: 'email',
@@ -105,7 +113,6 @@ async function sendTelegramEdge(
       detail: 'Telegram alerts are turned off.',
     };
   }
-
   if (!isValidTelegramChatId(settings.telegram.chatId)) {
     return {
       channel: 'telegram',
@@ -162,6 +169,102 @@ async function sendTelegramEdge(
   }
 }
 
+async function sendWebPushEdge(
+  env: WorkerEnv,
+  settings: AlertSettings,
+  alertId: string,
+  title: string,
+  body: string,
+  url: string | null
+): Promise<ChannelDeliveryResult> {
+  if (!settings.push.enabled) {
+    return {
+      channel: 'push',
+      status: 'disabled',
+      destination: 'Browser Push',
+      detail: 'Browser push alerts are turned off.',
+    };
+  }
+
+  const vapid = resolveVapidConfig(env);
+  if (!vapid) {
+    return {
+      channel: 'push',
+      status: 'logged',
+      destination: 'Browser Push',
+      detail:
+        'Alert recorded in D1. Configure VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY secrets to deliver background Web Push alerts.',
+    };
+  }
+
+  const subscriptions = await getPushSubscriptionsD1(env.DB);
+  if (subscriptions.length === 0) {
+    return {
+      channel: 'push',
+      status: 'failed',
+      destination: '0 subscribed browsers',
+      detail:
+        'No browser push subscription is registered yet. Open Alert Setup in Chrome and enable Browser Push to receive background alerts.',
+    };
+  }
+
+  const results = await Promise.all(
+    subscriptions.map(async (sub) => {
+      const outcome = await sendWebPushMessage(
+        sub,
+        {
+          title,
+          body,
+          url: url || '/',
+          tag: `pricepulse-${alertId}`,
+          alertId,
+        },
+        vapid
+      );
+      if (outcome.gone) {
+        await deletePushSubscriptionD1(env.DB, sub.endpoint).catch(() => undefined);
+      }
+      return outcome;
+    })
+  );
+
+  const delivered = results.filter((r) => r.ok).length;
+  const expired = results.filter((r) => r.gone).length;
+  const failed = results.filter((r) => !r.ok && !r.gone);
+
+  if (delivered > 0) {
+    const label = delivered === 1 ? '1 subscribed browser' : `${delivered} subscribed browsers`;
+    const suffix =
+      expired > 0 || failed.length > 0
+        ? ` (${expired > 0 ? `${expired} expired removed` : ''}${expired > 0 && failed.length > 0 ? ', ' : ''}${failed.length > 0 ? `${failed.length} failed` : ''})`
+        : '';
+    return {
+      channel: 'push',
+      status: 'sent',
+      destination: label,
+      detail: `Delivered background Web Push notification to ${label}.${suffix}`,
+    };
+  }
+
+  const firstError = failed[0]?.error;
+  if (expired === subscriptions.length) {
+    return {
+      channel: 'push',
+      status: 'failed',
+      destination: 'Expired browser subscription',
+      detail:
+        'Browser push subscription expired and was removed. Open Alert Setup in Chrome to re-subscribe.',
+    };
+  }
+
+  return {
+    channel: 'push',
+    status: 'failed',
+    destination: `${subscriptions.length} subscribed browser(s)`,
+    detail: firstError || 'Web Push delivery failed for all registered browsers.',
+  };
+}
+
 export interface EdgeDispatchParams {
   type: 'price_drop' | 'test';
   productId: string | null;
@@ -182,13 +285,15 @@ export async function dispatchEdgeAlert(
   settings: AlertSettings,
   params: EdgeDispatchParams
 ): Promise<AlertLogEntry> {
+  const alertId = `alert-${crypto.randomUUID().slice(0, 8)}`;
   const isDrop =
     params.type === 'price_drop' && params.previousPrice !== null && params.newPrice !== null;
-
   const subject = isDrop
     ? `Price Drop (${params.dropPercent}%): ${params.productTitle}`
     : 'PricePulse Test Alert — Notification Check';
-
+  const pushTitle = isDrop
+    ? `Price Drop (${params.dropPercent}%): ${params.productTitle}`
+    : 'PricePulse Test Alert';
   const message =
     params.customMessage ||
     (isDrop
@@ -213,24 +318,12 @@ export async function dispatchEdgeAlert(
   }
   if (!params.onlyChannel || params.onlyChannel === 'push') {
     deliveries.push(
-      settings.push.enabled
-        ? {
-            channel: 'push',
-            status: 'sent',
-            destination: 'Browser Push',
-            detail: 'Queued for instant browser notification delivery.',
-          }
-        : {
-            channel: 'push',
-            status: 'disabled',
-            destination: 'Browser Push',
-            detail: 'Browser push alerts are turned off.',
-          }
+      await sendWebPushEdge(env, settings, alertId, pushTitle, message, params.productUrl)
     );
   }
 
   return {
-    id: `alert-${crypto.randomUUID().slice(0, 8)}`,
+    id: alertId,
     type: params.type,
     productId: params.productId,
     productTitle: params.productTitle,
